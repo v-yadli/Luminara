@@ -4,11 +4,13 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.concurrent.TimeoutException;
 
 import com.stericson.RootTools.*;
 import com.stericson.RootTools.exceptions.RootDeniedException;
 import com.stericson.RootTools.execution.CommandCapture;
+import com.stericson.RootTools.execution.Shell;
 
 import android.support.v7.app.ActionBarActivity;
 import android.support.v7.app.ActionBar;
@@ -32,6 +34,23 @@ public class MainActivity extends ActionBarActivity {
 
 	static boolean started = false;
 	static Visualizer visualizer = null;
+	static private File dir;
+	static private HashMap<String, File> leds;
+
+	static float loMax, miMax, hiMax;
+	static final float minimalMax = 100.0f;
+	static final float decayStrength = 0.99f;
+	static float rms = 0.0f;
+	static float rmsMax = 1.0f;
+	static final float rmsMinMax = 1.0f;
+	static float intensityMin = 0.5f;
+	static float intensityMax = 0.51f;
+	static float intensityHistory = 0.0f;
+
+	static int loopCount = 0;
+	static int triggerCount = 0;
+	static float threshold = 2.0f;
+	static int triggerPos = 0;
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
@@ -58,10 +77,66 @@ public class MainActivity extends ActionBarActivity {
 		// automatically handle clicks on the Home/Up button, so long
 		// as you specify a parent activity in AndroidManifest.xml.
 		int id = item.getItemId();
-		if (id == R.id.action_settings) {
-			return true;
-		}
 		return super.onOptionsItemSelected(item);
+	}
+
+	@Override
+	public void onDestroy() {
+		commit(0,0,0);
+		Log.d("visualizer", "onDestroy");
+		stop();
+		super.onDestroy();
+	}
+
+	@Override
+	public void onStop() {
+		if (isFinishing()) {
+			Log.d("visualizer", "KIA!");
+			stop();
+		}
+		super.onStop();
+	}
+
+	public static void stop() {
+
+		if (visualizer != null) {
+			visualizer.setEnabled(false);
+			visualizer.release();
+			commit(0, 0, 0);
+		}
+		visualizer = null;
+		started = false;
+
+	}
+
+	public static void commit(int loVal, int miVal, int hiVal) {
+		try {
+
+			postValueToFile(loVal, "red");
+			postValueToFile(miVal, "green");
+			postValueToFile(hiVal, "blue");
+			postValueToFile((loVal + miVal) / 2, "logo1");
+			postValueToFile((hiVal + miVal) / 2, "logo2");
+			postValueToFile((hiVal + miVal + loVal) / 3, "button");
+
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+
+	}
+
+	public static void postValueToFile(int val, String key) throws IOException {
+		File f;
+		FileOutputStream os;
+		if (leds.containsKey(key)) {
+			f = leds.get(key);
+			os = new FileOutputStream(f);
+			os.write(Integer.toString(val).getBytes());
+			os.close();
+		}
 	}
 
 	/**
@@ -71,21 +146,6 @@ public class MainActivity extends ActionBarActivity {
 
 		public PlaceholderFragment() {
 		}
-
-		static float loMax, miMax, hiMax;
-		static final float minimalMax = 100.0f;
-		static final float decayStrength = 0.99f;
-		static float rms = 0.0f;
-		static float rmsMax = 1.0f;
-		static final float rmsMinMax = 1.0f;
-		static float intensityMin = 0.5f;
-		static float intensityMax = 0.51f;
-		static float intensityHistory = 0.0f;
-
-		static private File dir;
-		static private File redFile;
-		static private File greenFile;
-		static private File blueFile;
 
 		public void OnWaveData(byte[] bytes) {
 		}
@@ -182,19 +242,44 @@ public class MainActivity extends ActionBarActivity {
 			}
 			float range = intensityMax - intensityMin;
 
+			++loopCount;
+
 			intensity = (intensity - intensityMin) / range;
 			if (intensity < 0)
 				intensity = 0;
 			if (intensity > 1)
 				intensity = 1;
 
-			if (intensity < intensityHistory * 2)
-			{
+			if (intensity < intensityHistory * threshold) {
 				intensity = (float) (intensity * 0.1 + intensityHistory * 0.9);
 				intensity *= 0.7;
-			}else
+			} else {
 				intensity = 1;
+				++triggerCount;
+				if (loopCount - triggerPos > 3) {
+					triggerPos = loopCount;
+					// XXX something's wrong
+				}
+			}
 			intensityHistory = intensity;
+
+			if (loopCount == 20) {
+				Log.d("visualizer", "t=" + triggerCount);
+				if (triggerCount > 7) {
+					threshold /= 0.9;
+					Log.d("visualizer", "threshold up to " + threshold);
+				}
+				if (triggerCount < 2) {
+					threshold *= 0.9;
+					Log.d("visualizer", "threshold down to " + threshold);
+				}
+
+				if (threshold < 1.1f)
+					threshold = 1.1f;
+				loopCount = 0;
+				triggerCount = 0;
+
+			}
 
 			// intensity = (float) Math.sqrt(intensity);
 			// intensity = (float) Math.sqrt(intensity);
@@ -202,9 +287,9 @@ public class MainActivity extends ActionBarActivity {
 			// if (intensity > intensityMax * 0.6)
 			// Log.d("visualizer", "Trigger");
 
-			Log.d("visualizer", "range = \t" + range + "\tmax = \t"
-					+ intensityMax + "\tmin=\t" + intensityMin + "\tval=\t"
-					+ intensity);
+			// Log.d("visualizer", "range = \t" + range + "\tmax = \t"
+			// + intensityMax + "\tmin=\t" + intensityMin + "\tval=\t"
+			// + intensity);
 
 			// float intensity = peak / peakMax;
 			// intensity *= intensity * intensity * intensity * intensity;
@@ -235,24 +320,107 @@ public class MainActivity extends ActionBarActivity {
 			// op.execute(new int[] { loVal, miVal,
 			// hiVal });
 
-			FileOutputStream os;
+			commit(loVal, miVal, hiVal);
+
+		}
+
+		protected CommandCapture hackBrightnessFile(String path, File target) {
+			return new CommandCapture(0, "chmod 666 " + path,
+					"chowm root:sdcard_r " + path, "ln -s " + path + " "
+							+ target.getAbsolutePath());
+		}
+
+		protected void probe_rgb() {
+			File f;
+			f = new File("/sys/class/leds/led:rgb_red/brightness");
+			if (f.exists())
+				leds.put("red", f);
+			f = new File("/sys/class/leds/pwr-red/brightness");
+			if (f.exists())
+				leds.put("red", f);
+			f = new File("/sys/class/leds/red/brightness");
+			if (f.exists())
+				leds.put("red", f);
+
+			f = new File("/sys/class/leds/led:rgb_blue/brightness");
+			if (f.exists())
+				leds.put("blue", f);
+			f = new File("/sys/class/leds/pwr-blue/brightness");
+			if (f.exists())
+				leds.put("blue", f);
+			f = new File("/sys/class/leds/blue/brightness");
+			if (f.exists())
+				leds.put("blue", f);
+
+			f = new File("/sys/class/leds/led:rgb_green/brightness");
+			if (f.exists())
+				leds.put("green", f);
+			f = new File("/sys/class/leds/pwr-green/brightness");
+			if (f.exists())
+				leds.put("green", f);
+			f = new File("/sys/class/leds/green/brightness");
+			if (f.exists())
+				leds.put("green", f);
+		}
+
+		protected void probe_logo() {
+			File f;
+			f = new File("/sys/class/leds/logo-backlight_1/brightness");
+			if (f.exists())
+				leds.put("logo1", f);
+
+			f = new File("/sys/class/leds/logo-backlight_2/brightness");
+			if (f.exists())
+				leds.put("logo2", f);
+		}
+
+		protected void probe_button_backlight() {
+			File f;
+			f = new File("/sys/class/leds/button-backlight/brightness");
+			if (f.exists())
+				leds.put("button", f);
+
+		}
+
+		protected boolean initialize() {
+
+			leds = new HashMap<String, File>();
+
 			try {
-				os = new FileOutputStream(redFile);
-				os.write(Integer.toString(loVal).getBytes());
-				os.close();
-				os = new FileOutputStream(greenFile);
-				os.write(Integer.toString(miVal).getBytes());
-				os.close();
-				os = new FileOutputStream(blueFile);
-				os.write(Integer.toString(hiVal).getBytes());
-				os.close();
-			} catch (FileNotFoundException e) {
+				dir = getActivity().getFilesDir();
+
+				probe_rgb();
+				probe_logo();// for Xperia TX
+				probe_button_backlight(); // for my beloved Xperia SL
+
+				if (RootTools.isAccessGiven()) {
+
+					Shell sh = RootTools.getShell(true);
+
+					for (String key : leds.keySet()) {
+						File f = new File(dir, key);
+						CommandCapture cmd = hackBrightnessFile(leds.get(key)
+								.getAbsolutePath(), f);
+						sh.add(cmd);
+						leds.put(key, f);
+					}
+					return true;
+				}
+
+				// Runtime.getRuntime()
+				// .exec("su -c '"
+				// + "'");
+			} catch (IOException e1) {
+				// TODO Auto-generated catch block
+				e1.printStackTrace();
+			} catch (TimeoutException e) {
+				// TODO Auto-generated catch block
 				e.printStackTrace();
-			} catch (IOException e) {
+			} catch (RootDeniedException e) {
 				// TODO Auto-generated catch block
 				e.printStackTrace();
 			}
-
+			return false;
 		}
 
 		private int boost(int val) {
@@ -275,94 +443,55 @@ public class MainActivity extends ActionBarActivity {
 					if (!started) {
 						// http://stackoverflow.com/questions/5293615/how-can-i-get-root-permissions-through-the-android-sdk
 						// IS WRONG
-						try {
 
-							dir = getActivity().getFilesDir();
-							Log.d("visualizer",
-									"dir = " + dir.getAbsolutePath());
-							dir.mkdirs();
+						if (initialize()) {
 
-							redFile = new File(dir, "red");
-							greenFile = new File(dir, "green");
-							blueFile = new File(dir, "blue");
+							visualizer = new Visualizer(0);
+							visualizer.setCaptureSize(Visualizer
+									.getCaptureSizeRange()[1]);
+							hiMax = miMax = loMax = minimalMax;
+							visualizer.setDataCaptureListener(
+									new Visualizer.OnDataCaptureListener() {
+										public void onWaveFormDataCapture(
+												Visualizer visualizer,
+												byte[] bytes, int samplingRate) {
+											OnWaveData(bytes);
+										}
 
-							if (RootTools.isAccessGiven()) {
-								CommandCapture cmd = new CommandCapture(
-										0,
-										"chmod 666 /sys/class/leds/led:rgb_red/brightness",
-										"chmod 666 /sys/class/leds/led:rgb_green/brightness",
-										"chmod 666 /sys/class/leds/led:rgb_blue/brightness",
-										"chown root:sdard_r /sys/class/leds/led:rgb_red/brightness",
-										"chown root:sdard_r /sys/class/leds/led:rgb_green/brightness",
-										"chown root:sdard_r /sys/class/leds/led:rgb_blue/brightness",
-										"ln -s /sys/class/leds/led:rgb_red/brightness "
-												+ redFile.getAbsolutePath(),
-										"ln -s /sys/class/leds/led:rgb_green/brightness "
-												+ greenFile.getAbsolutePath(),
-										"ln -s /sys/class/leds/led:rgb_blue/brightness "
-												+ blueFile.getAbsolutePath());
-								RootTools.getShell(true).add(cmd);
-							}
+										public void onFftDataCapture(
+												Visualizer visualizer,
+												byte[] bytes, int samplingRate) {
+											OnFFTData(bytes);
+										}
 
-							// Runtime.getRuntime()
-							// .exec("su -c '"
-							// + "'");
-						} catch (IOException e1) {
-							// TODO Auto-generated catch block
-							e1.printStackTrace();
-						} catch (TimeoutException e) {
-							// TODO Auto-generated catch block
-							e.printStackTrace();
-						} catch (RootDeniedException e) {
-							// TODO Auto-generated catch block
-							e.printStackTrace();
+									}, Visualizer.getMaxCaptureRate(), false,
+									true);
+
+							visualizer.setEnabled(true);
+							b.setText("STOP");
+							started = true;
+						} else {
+							AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
+									getActivity());
+							dlgBuilder.setMessage("Failed to get ROOT access.");
+							dlgBuilder.setTitle("Alert");
+							dlgBuilder.show();
 						}
 
-						visualizer = new Visualizer(0);
-						visualizer.setCaptureSize(Visualizer
-								.getCaptureSizeRange()[1]);
-						hiMax = miMax = loMax = minimalMax;
-						visualizer.setDataCaptureListener(
-								new Visualizer.OnDataCaptureListener() {
-									public void onWaveFormDataCapture(
-											Visualizer visualizer,
-											byte[] bytes, int samplingRate) {
-										OnWaveData(bytes);
-									}
-
-									public void onFftDataCapture(
-											Visualizer visualizer,
-											byte[] bytes, int samplingRate) {
-										OnFFTData(bytes);
-									}
-
-								}, Visualizer.getMaxCaptureRate(), false, true);
-
-						visualizer.setEnabled(true);
-						// else {
-						//
-						// AlertDialog.Builder dlgBuilder = new
-						// AlertDialog.Builder(
-						// getActivity());
-						// dlgBuilder.setMessage("Failed to get root access.");
-						// dlgBuilder.setTitle("Alert");
-						// dlgBuilder.show();
-						// }
-
-						b.setText("STOP");
 					} else {
-						if (visualizer != null)
-							visualizer.release();
-						visualizer = null;
+
+						stop();
+
 						b.setText("START");
 					}
 
-					started = !started;
 				}
+
 			});
 
 			return rootView;
 		}
+
 	}
 
 }
