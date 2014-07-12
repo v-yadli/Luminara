@@ -4,6 +4,8 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.HashMap;
 import java.util.concurrent.TimeoutException;
 
@@ -16,6 +18,9 @@ import android.support.v7.app.ActionBarActivity;
 import android.support.v7.app.ActionBar;
 import android.support.v4.app.Fragment;
 import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.media.audiofx.Visualizer;
 import android.os.AsyncTask;
 import android.os.Bundle;
@@ -33,6 +38,8 @@ import android.os.Build;
 public class MainActivity extends ActionBarActivity {
 
 	static boolean started = false;
+	static boolean onLazyCommit = false;
+	static boolean onPowerSave = false;
 	static Visualizer visualizer = null;
 	static private File dir;
 	static private HashMap<String, File> leds;
@@ -51,11 +58,18 @@ public class MainActivity extends ActionBarActivity {
 	static int triggerCount = 0;
 	static float threshold = 2.0f;
 	static int triggerPos = 0;
+	
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_main);
+		
+        // INITIALIZE RECEIVER
+        IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        BroadcastReceiver mReceiver = new ScreenReceiver();
+        registerReceiver(mReceiver, filter);
 
 		if (savedInstanceState == null) {
 			getSupportFragmentManager().beginTransaction()
@@ -82,7 +96,7 @@ public class MainActivity extends ActionBarActivity {
 
 	@Override
 	public void onDestroy() {
-		commit(0,0,0);
+		commit(0, 0, 0);
 		Log.d("visualizer", "onDestroy");
 		stop();
 		super.onDestroy();
@@ -90,11 +104,37 @@ public class MainActivity extends ActionBarActivity {
 
 	@Override
 	public void onStop() {
-		if (isFinishing()) {
-			Log.d("visualizer", "KIA!");
-			stop();
-		}
 		super.onStop();
+	}
+	
+	@Override
+	public void onBackPressed() {
+		moveTaskToBack(false);
+	}
+
+	protected static void periodicalCheck() {
+		if (loopCount == 20) {
+
+			Log.d("visualizer", "t=" + triggerCount);
+			if (triggerCount > 7) {
+				threshold /= 0.9;
+				Log.d("visualizer", "threshold up to " + threshold);
+			}
+			if (triggerCount < 2) {
+				threshold *= 0.9;
+				Log.d("visualizer", "threshold down to " + threshold);
+			}
+
+			if (threshold < 1.1f)
+				threshold = 1.1f;
+			
+			
+			
+			
+			// reset loopCount
+			loopCount = 0;
+			triggerCount = 0;
+		}
 	}
 
 	public static void stop() {
@@ -131,13 +171,14 @@ public class MainActivity extends ActionBarActivity {
 	public static void postValueToFile(int val, String key) throws IOException {
 		File f;
 		FileOutputStream os;
-		if (leds.containsKey(key)) {
+		if (leds != null && leds.containsKey(key)) {
 			f = leds.get(key);
 			os = new FileOutputStream(f);
 			os.write(Integer.toString(val).getBytes());
 			os.close();
 		}
 	}
+
 
 	/**
 	 * A placeholder fragment containing a simple view.
@@ -263,23 +304,7 @@ public class MainActivity extends ActionBarActivity {
 			}
 			intensityHistory = intensity;
 
-			if (loopCount == 20) {
-				Log.d("visualizer", "t=" + triggerCount);
-				if (triggerCount > 7) {
-					threshold /= 0.9;
-					Log.d("visualizer", "threshold up to " + threshold);
-				}
-				if (triggerCount < 2) {
-					threshold *= 0.9;
-					Log.d("visualizer", "threshold down to " + threshold);
-				}
-
-				if (threshold < 1.1f)
-					threshold = 1.1f;
-				loopCount = 0;
-				triggerCount = 0;
-
-			}
+			periodicalCheck();
 
 			// intensity = (float) Math.sqrt(intensity);
 			// intensity = (float) Math.sqrt(intensity);
@@ -410,14 +435,18 @@ public class MainActivity extends ActionBarActivity {
 				// Runtime.getRuntime()
 				// .exec("su -c '"
 				// + "'");
-			} catch (IOException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
-			} catch (TimeoutException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (RootDeniedException e) {
-				// TODO Auto-generated catch block
+			} catch (Exception e) {
+				AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
+						getActivity());
+				StringWriter sw = new StringWriter();
+				PrintWriter pw = new PrintWriter(sw);
+				e.printStackTrace(pw);
+				pw.close();
+				// dlgBuilder.setMessage(e.toString()+"\n"+e.);
+				dlgBuilder.setMessage(sw.toString());
+				dlgBuilder.setTitle("Alert");
+				dlgBuilder.show();
+
 				e.printStackTrace();
 			}
 			return false;
@@ -429,13 +458,18 @@ public class MainActivity extends ActionBarActivity {
 				val = 255;
 			return val;
 		}
-
+		
 		@Override
 		public View onCreateView(LayoutInflater inflater, ViewGroup container,
 				Bundle savedInstanceState) {
 			View rootView = inflater.inflate(R.layout.fragment_main, container,
 					false);
 			final Button b = (Button) rootView.findViewById(R.id.button1);
+			
+			if(started){//if the view is recreated, we set text to stop
+				b.setText("STOP");
+			}
+			
 			b.setOnClickListener(new OnClickListener() {
 
 				@Override
@@ -445,31 +479,47 @@ public class MainActivity extends ActionBarActivity {
 						// IS WRONG
 
 						if (initialize()) {
+							try {
 
-							visualizer = new Visualizer(0);
-							visualizer.setCaptureSize(Visualizer
-									.getCaptureSizeRange()[1]);
-							hiMax = miMax = loMax = minimalMax;
-							visualizer.setDataCaptureListener(
-									new Visualizer.OnDataCaptureListener() {
-										public void onWaveFormDataCapture(
-												Visualizer visualizer,
-												byte[] bytes, int samplingRate) {
-											OnWaveData(bytes);
-										}
+								visualizer = new Visualizer(0);
+								visualizer.setCaptureSize(Visualizer
+										.getCaptureSizeRange()[1]);
+								hiMax = miMax = loMax = minimalMax;
+								visualizer.setDataCaptureListener(
+										new Visualizer.OnDataCaptureListener() {
+											public void onWaveFormDataCapture(
+													Visualizer visualizer,
+													byte[] bytes,
+													int samplingRate) {
+												OnWaveData(bytes);
+											}
 
-										public void onFftDataCapture(
-												Visualizer visualizer,
-												byte[] bytes, int samplingRate) {
-											OnFFTData(bytes);
-										}
+											public void onFftDataCapture(
+													Visualizer visualizer,
+													byte[] bytes,
+													int samplingRate) {
+												OnFFTData(bytes);
+											}
 
-									}, Visualizer.getMaxCaptureRate(), false,
-									true);
+										}, Visualizer.getMaxCaptureRate(),
+										false, true);
 
-							visualizer.setEnabled(true);
-							b.setText("STOP");
-							started = true;
+								visualizer.setEnabled(true);
+								b.setText("STOP");
+								started = true;
+							} catch (Exception e) {
+								AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
+										getActivity());
+								StringWriter sw = new StringWriter();
+								PrintWriter pw = new PrintWriter(sw);
+								e.printStackTrace(pw);
+								pw.close();
+								// dlgBuilder.setMessage(e.toString()+"\n"+e.);
+								dlgBuilder.setMessage(sw.toString());
+								dlgBuilder.setTitle("Alert");
+								dlgBuilder.show();
+								e.printStackTrace();
+							}
 						} else {
 							AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
 									getActivity());
