@@ -18,7 +18,10 @@
         android:theme="@style/AppTheme">
         <activity
             android:name="com.yadli.luminara.MainActivity"
+            android:configChanges="orientation"
             android:label="@string/app_name" >
+            
+            
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 

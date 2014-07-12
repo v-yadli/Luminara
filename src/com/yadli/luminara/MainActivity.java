@@ -21,6 +21,7 @@ import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.res.Configuration;
 import android.media.audiofx.Visualizer;
 import android.os.AsyncTask;
 import android.os.Bundle;
@@ -37,16 +38,22 @@ import android.os.Build;
 
 public class MainActivity extends ActionBarActivity {
 
+	static final int LOOP_PERIOD = 20;
+	static final int LAZY_LATCH_THRESHOLD = 1000;
+	static final float minimalMax = 100.0f;
+	static final float decayStrength = 0.99f;
+
+	static boolean applicationStarted = false;
+
 	static boolean started = false;
 	static boolean onLazyCommit = false;
+	static int lazyLatch = 0;
 	static boolean onPowerSave = false;
 	static Visualizer visualizer = null;
 	static private File dir;
 	static private HashMap<String, File> leds;
 
 	static float loMax, miMax, hiMax;
-	static final float minimalMax = 100.0f;
-	static final float decayStrength = 0.99f;
 	static float rms = 0.0f;
 	static float rmsMax = 1.0f;
 	static final float rmsMinMax = 1.0f;
@@ -58,18 +65,21 @@ public class MainActivity extends ActionBarActivity {
 	static int triggerCount = 0;
 	static float threshold = 2.0f;
 	static int triggerPos = 0;
-	
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_main);
-		
-        // INITIALIZE RECEIVER
-        IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_ON);
-        filter.addAction(Intent.ACTION_SCREEN_OFF);
-        BroadcastReceiver mReceiver = new ScreenReceiver();
-        registerReceiver(mReceiver, filter);
+
+		// INITIALIZE RECEIVER
+		if (!applicationStarted) {
+			IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_ON);
+			filter.addAction(Intent.ACTION_SCREEN_OFF);
+			BroadcastReceiver mReceiver = new ScreenReceiver();
+			registerReceiver(mReceiver, filter);
+		}
+
+		applicationStarted = true;
 
 		if (savedInstanceState == null) {
 			getSupportFragmentManager().beginTransaction()
@@ -95,6 +105,11 @@ public class MainActivity extends ActionBarActivity {
 	}
 
 	@Override
+	public void onConfigurationChanged(Configuration newConfig) {
+		super.onConfigurationChanged(newConfig);
+	}
+
+	@Override
 	public void onDestroy() {
 		commit(0, 0, 0);
 		Log.d("visualizer", "onDestroy");
@@ -106,35 +121,40 @@ public class MainActivity extends ActionBarActivity {
 	public void onStop() {
 		super.onStop();
 	}
-	
+
 	@Override
 	public void onBackPressed() {
+		// this prevents the Activity to be killed
+		// http://sr1.me/way-to-explore/2013/09/14/make-your-android-application-run-at-background.html
 		moveTaskToBack(false);
 	}
 
 	protected static void periodicalCheck() {
-		if (loopCount == 20) {
+		if (loopCount == LOOP_PERIOD) {
 
-			Log.d("visualizer", "t=" + triggerCount);
-			if (triggerCount > 7) {
-				threshold /= 0.9;
-				Log.d("visualizer", "threshold up to " + threshold);
-			}
-			if (triggerCount < 2) {
-				threshold *= 0.9;
-				Log.d("visualizer", "threshold down to " + threshold);
+			if (!onLazyCommit) {
+				adaptivaeThresholdCalc();
 			}
 
-			if (threshold < 1.1f)
-				threshold = 1.1f;
-			
-			
-			
-			
 			// reset loopCount
 			loopCount = 0;
 			triggerCount = 0;
 		}
+	}
+
+	protected static void adaptivaeThresholdCalc() {
+		Log.d("visualizer", "t=" + triggerCount);
+		if (triggerCount > 7) {
+			threshold /= 0.9;
+			Log.d("visualizer", "threshold up to " + threshold);
+		}
+		if (triggerCount < 2) {
+			threshold *= 0.9;
+			Log.d("visualizer", "threshold down to " + threshold);
+		}
+
+		if (threshold < 1.1f)
+			threshold = 1.1f;
 	}
 
 	public static void stop() {
@@ -151,13 +171,32 @@ public class MainActivity extends ActionBarActivity {
 
 	public static void commit(int loVal, int miVal, int hiVal) {
 		try {
+			boolean needCommit = true;
 
-			postValueToFile(loVal, "red");
-			postValueToFile(miVal, "green");
-			postValueToFile(hiVal, "blue");
-			postValueToFile((loVal + miVal) / 2, "logo1");
-			postValueToFile((hiVal + miVal) / 2, "logo2");
-			postValueToFile((hiVal + miVal + loVal) / 3, "button");
+			if (loVal == 0 && miVal == 0 && hiVal == 0) {
+				if (onLazyCommit)
+					needCommit = false;
+				else {
+					++lazyLatch;
+
+					if (lazyLatch > LAZY_LATCH_THRESHOLD) {
+						Log.d("visualizer", "entering lazy commit mode");
+						onLazyCommit = true;
+					}
+				}
+			} else {
+				onLazyCommit = false;
+				lazyLatch = 0;
+			}
+
+			if (needCommit) {
+				postValueToFile(loVal, "red");
+				postValueToFile(miVal, "green");
+				postValueToFile(hiVal, "blue");
+				postValueToFile((loVal + miVal) / 2, "logo1");
+				postValueToFile((hiVal + miVal) / 2, "logo2");
+				postValueToFile((hiVal + miVal + loVal) / 3, "button");
+			}
 
 		} catch (FileNotFoundException e) {
 			e.printStackTrace();
@@ -178,7 +217,6 @@ public class MainActivity extends ActionBarActivity {
 			os.close();
 		}
 	}
-
 
 	/**
 	 * A placeholder fragment containing a simple view.
@@ -458,18 +496,18 @@ public class MainActivity extends ActionBarActivity {
 				val = 255;
 			return val;
 		}
-		
+
 		@Override
 		public View onCreateView(LayoutInflater inflater, ViewGroup container,
 				Bundle savedInstanceState) {
 			View rootView = inflater.inflate(R.layout.fragment_main, container,
 					false);
 			final Button b = (Button) rootView.findViewById(R.id.button1);
-			
-			if(started){//if the view is recreated, we set text to stop
+
+			if (started) {// if the view is recreated, we set text to stop
 				b.setText("STOP");
 			}
-			
+
 			b.setOnClickListener(new OnClickListener() {
 
 				@Override
