@@ -474,6 +474,9 @@ public class MainActivity extends ActionBarActivity {
 			f = new File("/sys/class/leds/red/brightness");
 			if (f.exists())
 				leds.put("red", f);
+			f = new File("/sys/class/leds/led_r/brightness");
+			if (f.exists())
+				leds.put("red", f);
 
 			f = new File("/sys/class/leds/led:rgb_blue/brightness");
 			if (f.exists())
@@ -484,6 +487,9 @@ public class MainActivity extends ActionBarActivity {
 			f = new File("/sys/class/leds/blue/brightness");
 			if (f.exists())
 				leds.put("blue", f);
+			f = new File("/sys/class/leds/led_b/brightness");
+			if (f.exists())
+				leds.put("red", f);
 
 			f = new File("/sys/class/leds/led:rgb_green/brightness");
 			if (f.exists())
@@ -494,6 +500,9 @@ public class MainActivity extends ActionBarActivity {
 			f = new File("/sys/class/leds/green/brightness");
 			if (f.exists())
 				leds.put("green", f);
+			f = new File("/sys/class/leds/led_g/brightness");
+			if (f.exists())
+				leds.put("red", f);
 		}
 
 		protected void probe_logo() {
