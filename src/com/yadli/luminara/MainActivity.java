@@ -135,7 +135,16 @@ public class MainActivity extends ActionBarActivity {
 		moveTaskToBack(false);
 	}
 
+	static int peak = 0;
+
 	private static void OnWaveData(byte[] bytes) {
+		peak = 0;
+		for (byte b : bytes) {
+			int val = Math.abs(b);
+			if (val > peak)
+				peak = val;
+		}
+		Log.d("visualizer", "peak = " + peak);
 	}
 
 	private static int boost(int val) {
@@ -145,17 +154,162 @@ public class MainActivity extends ActionBarActivity {
 		return val;
 	}
 
-	private static void OnFFTData(byte[] bytes) {
+	private static void onFFTData(byte[] bytes) {
+		audioEngine_v1(bytes);
+		periodicalCheck();
+	}
+
+	protected static void adaptivaeThresholdCalc() {
+		Log.d("visualizer", "t=" + triggerCount);
+		if (triggerCount > 3) {
+			threshold /= 0.9;
+			Log.d("visualizer", "threshold up to " + threshold);
+		}
+		if (triggerCount < 2) {
+			threshold *= 0.9;
+			Log.d("visualizer", "threshold down to " + threshold);
+		}
+
+		if (threshold < 1.1f)
+			threshold = 1.1f;
+	}
+
+	protected static void periodicalCheck() {
+		++loopCount;
+		if (loopCount == LOOP_PERIOD) {
+
+			 adaptivaeThresholdCalc();
+
+			// reset loopCount
+			loopCount = 0;
+			triggerCount = 0;
+
+			powerSaveIfOnLazyCommit();
+		}
+	}
+
+	static float[] history_fft = null;
+	static float[] history_weight = null;
+	static int current_follow_idx = -1;
+	static float current_follow_value = 0;
+	static float strength = 0;
+	static int r = 0, g = 0, b = 0;
+
+	protected static void calculate_rgb() {
+		float percent = (float) current_follow_idx / (float) history_fft.length;
+		percent *= 2;
+		if (percent > 1)
+			percent = 1;
+		int hue = (int) (percent * 300);// limit hue to 0~300
+
+		if (hue < 60) {
+			b = 0;
+			r = 255;
+			g = hue * 255 / 60;
+		} else if (hue < 120) {
+			b = 0;
+			r = 255 - (hue - 60) * 255 / 60;
+			g = 255;
+		} else if (hue < 180) {
+			r = 0;
+			g = 255;
+			b = (hue - 120) * 255 / 60;
+		} else if (hue < 240) {
+			r = 0;
+			b = 255;
+			g = 255 - (hue - 180) * 255 / 60;
+		} else {
+			b = 255;
+			g = 0;
+			r = (hue - 240) * 255 / 60;
+		}
+	}
+
+	protected static void audioEngine_v2(byte[] bytes) {
+		int len = bytes.length;
+		if (history_fft == null)
+			history_fft = new float[len];
+		if (history_weight == null)
+			history_weight = new float[len];
+		int index = 2;
+		boolean picking = false;
+		strength *= 0.4f;
+		if (current_follow_idx != -1)
+			history_weight[current_follow_idx] *= 0.8f;
+
+		if (strength < 0.1f)
+			current_follow_idx = -1;
+
+		if (current_follow_idx != -1) {
+			int re = bytes[current_follow_idx];
+			int im = bytes[current_follow_idx + 1];
+			float val = (float) Math.sqrt(re * re + im * im);
+			strength = val / current_follow_value * 0.75f;
+			if (strength < 0.9f) {
+				Log.d("visualizer", "follow end");
+				current_follow_idx = -1;
+			}
+		}
+
+		for (; index < len; index += 2) {
+			int re = bytes[index];
+			int im = bytes[index + 1];
+			float val = (float) Math.sqrt(re * re + im * im);
+
+			if (index != current_follow_idx) {
+
+				float threshold = 6.0f - (index * 12.0f / len);
+
+				if (val > 20) {// it should be at least this high.
+					if (val > history_fft[index] * threshold) {
+						boolean change = !picking;
+
+						if (picking
+								&& history_weight[index] < history_weight[current_follow_idx]) {
+							history_weight[index] = 1;
+							change = true;
+						}
+						
+						if (!picking && current_follow_idx != -1)
+						{
+							if(val / history_fft[index] < strength)
+								change = false;
+						}
+						
+
+						if (change) {
+							Log.d("visualizer", "follow start on " + index
+									+ ", val= " + val + " threshold=" + threshold);
+							current_follow_idx = index;
+							current_follow_value = val;
+							strength = 0.75f;
+							calculate_rgb();
+							picking = true;
+						}
+					}
+				}
+			}
+
+			history_fft[index] = val;
+		}
+
+		if (strength > 1)
+			strength = 1;
+		if (strength < 0)
+			strength = 0;
+
+		commit((int) (strength * r), (int) (strength * g), (int) (strength * b));
+	}
+
+	protected static void audioEngine_v1(byte[] bytes) {
 		int len = bytes.length;
 		int index = 2;// 0 and 1 are real
 						// part of F0 and
 						// Fn/2
 
 		int low = 0, mid = 0, high = 0;
-		int lowBound = len / 50; // 20k / 50 =
-									// 400Hz as
-									// lowBound
-		int midBound = len / 20;// 20k / 20 = 1Khz
+		int lowBound = 20;
+		int midBound = 100;// 20k / 20 = 1Khz
 								// as midbound
 
 		rms = 0.0f;
@@ -165,7 +319,7 @@ public class MainActivity extends ActionBarActivity {
 			int im = bytes[index + 1];
 			int val = (int) Math.sqrt(re * re + im * im);
 
-			if (index <= midBound)
+			if (index <= lowBound)
 				rms += val;
 
 			if (index <= lowBound) {
@@ -237,8 +391,6 @@ public class MainActivity extends ActionBarActivity {
 		}
 		float range = intensityMax - intensityMin;
 
-		++loopCount;
-
 		intensity = (intensity - intensityMin) / range;
 		if (intensity < 0)
 			intensity = 0;
@@ -257,8 +409,6 @@ public class MainActivity extends ActionBarActivity {
 			}
 		}
 		intensityHistory = intensity;
-
-		periodicalCheck();
 
 		// intensity = (float) Math.sqrt(intensity);
 		// intensity = (float) Math.sqrt(intensity);
@@ -300,22 +450,6 @@ public class MainActivity extends ActionBarActivity {
 		// hiVal });
 
 		commit(loVal, miVal, hiVal);
-
-	}
-
-	protected static void periodicalCheck() {
-		if (loopCount == LOOP_PERIOD) {
-
-			if (!onLazyCommit) {
-				adaptivaeThresholdCalc();
-			}
-
-			// reset loopCount
-			loopCount = 0;
-			triggerCount = 0;
-
-			powerSaveIfOnLazyCommit();
-		}
 	}
 
 	public static void resumeIfOnPowerSave() {
@@ -336,21 +470,6 @@ public class MainActivity extends ActionBarActivity {
 		} else {
 			Log.d("visualizer", "active, not going power save");
 		}
-	}
-
-	protected static void adaptivaeThresholdCalc() {
-		Log.d("visualizer", "t=" + triggerCount);
-		if (triggerCount > 7) {
-			threshold /= 0.9;
-			Log.d("visualizer", "threshold up to " + threshold);
-		}
-		if (triggerCount < 2) {
-			threshold *= 0.9;
-			Log.d("visualizer", "threshold down to " + threshold);
-		}
-
-		if (threshold < 1.1f)
-			threshold = 1.1f;
 	}
 
 	public static void stop() {
@@ -469,7 +588,7 @@ public class MainActivity extends ActionBarActivity {
 
 						public void onFftDataCapture(Visualizer visualizer,
 								byte[] bytes, int samplingRate) {
-							OnFFTData(bytes);
+							onFFTData(bytes);
 						}
 
 					}, Visualizer.getMaxCaptureRate(), false, true);
