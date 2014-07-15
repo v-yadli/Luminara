@@ -11,6 +11,7 @@ import java.util.concurrent.TimeoutException;
 
 import com.stericson.RootTools.*;
 import com.stericson.RootTools.exceptions.RootDeniedException;
+import com.stericson.RootTools.execution.Command;
 import com.stericson.RootTools.execution.CommandCapture;
 import com.stericson.RootTools.execution.Shell;
 
@@ -49,7 +50,9 @@ public class MainActivity extends ActionBarActivity {
 
 	static boolean started = false;
 	static boolean onLazyCommit = false;
+	static boolean onFatalError = false;
 	static int lazyLatch = 0;
+	static int commit_clk = 0;
 	static boolean onPowerSave = false;
 	static Visualizer visualizer = null;
 	static private File dir;
@@ -323,14 +326,14 @@ public class MainActivity extends ActionBarActivity {
 	}
 
 	public static void powerSaveIfOnLazyCommit() {
-		if(ScreenReceiver.screenIsOn)
+		if (ScreenReceiver.screenIsOn)
 			return;
 		if (onLazyCommit) {
 			// we're going down, we're going
 			Log.d("visualizer", "entering power save mode");
 			onPowerSave = true;
 			stop();
-		}else{
+		} else {
 			Log.d("visualizer", "active, not going power save");
 		}
 	}
@@ -382,20 +385,46 @@ public class MainActivity extends ActionBarActivity {
 				lazyLatch = 0;
 			}
 
-			if (needCommit) {
+			if (needCommit && !onFatalError) {
 				postValueToFile(loVal, "red");
 				postValueToFile(miVal, "green");
 				postValueToFile(hiVal, "blue");
+
+				// LG G2 back LED support
+
+				postValueToFile(loVal, "back-red");
+				postValueToFile(miVal, "back-green");
+				postValueToFile(hiVal, "back-blue");
+
 				postValueToFile((loVal + miVal) / 2, "logo1");
 				postValueToFile((hiVal + miVal) / 2, "logo2");
 				postValueToFile((hiVal + miVal + loVal) / 3, "button");
+
+				// postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-lut-2");
+				// postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-pwm-3");
+				postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-lut-4");
+
+				// Nexus N5 fix
+				postValueToFile(50, 0, "on-off-red");
+				postValueToFile(50, 0, "on-off-green");
+				postValueToFile(50, 0, "on-off-blue");
+
+				postValueToFile(commit_clk++, "trigger");
 			}
 
-		} catch (FileNotFoundException e) {
+		} catch (Exception e) {
+			onFatalError = true;
+			AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
+					currentActivity);
+			StringWriter sw = new StringWriter();
+			PrintWriter pw = new PrintWriter(sw);
+			e.printStackTrace(pw);
+			pw.close();
+			dlgBuilder.setTitle("Failed to write to led interface.");
+			dlgBuilder.setMessage(sw.toString());
+			dlgBuilder.show();
 			e.printStackTrace();
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+			stop();
 		}
 
 	}
@@ -407,6 +436,19 @@ public class MainActivity extends ActionBarActivity {
 			f = leds.get(key);
 			os = new FileOutputStream(f);
 			os.write(Integer.toString(val).getBytes());
+			os.close();
+		}
+	}
+
+	public static void postValueToFile(int val1, int val2, String key)
+			throws IOException {
+		File f;
+		FileOutputStream os;
+		if (leds != null && leds.containsKey(key)) {
+			f = leds.get(key);
+			os = new FileOutputStream(f);
+			os.write((Integer.toString(val1) + " " + Integer.toString(val2))
+					.getBytes());
 			os.close();
 		}
 	}
@@ -458,9 +500,18 @@ public class MainActivity extends ActionBarActivity {
 		}
 
 		protected CommandCapture hackBrightnessFile(String path, File target) {
+			// AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
+			// getActivity());
+			// dlgBuilder.setMessage("putting "+path+" to "+
+			// target.getAbsolutePath());
+			// dlgBuilder.setTitle("Debug");
+			// dlgBuilder.show();
 			return new CommandCapture(0, "chmod 666 " + path,
-					"chowm root:sdcard_r " + path, "ln -s " + path + " "
-							+ target.getAbsolutePath());
+					"chown root:sdcard_r " + path,
+
+					"rm -f" + target.getAbsolutePath(),
+
+					"ln -s " + path + " " + target.getAbsolutePath());
 		}
 
 		protected void probe_rgb() {
@@ -489,7 +540,7 @@ public class MainActivity extends ActionBarActivity {
 				leds.put("blue", f);
 			f = new File("/sys/class/leds/led_b/brightness");
 			if (f.exists())
-				leds.put("red", f);
+				leds.put("blue", f);
 
 			f = new File("/sys/class/leds/led:rgb_green/brightness");
 			if (f.exists())
@@ -502,7 +553,7 @@ public class MainActivity extends ActionBarActivity {
 				leds.put("green", f);
 			f = new File("/sys/class/leds/led_g/brightness");
 			if (f.exists())
-				leds.put("red", f);
+				leds.put("green", f);
 		}
 
 		protected void probe_logo() {
@@ -516,11 +567,152 @@ public class MainActivity extends ActionBarActivity {
 				leds.put("logo2", f);
 		}
 
-		protected void probe_button_backlight() {
+		protected void probe_special() {
 			File f;
+
+			// TODO detect LT26 device name
 			f = new File("/sys/class/leds/button-backlight/brightness");
 			if (f.exists())
 				leds.put("button", f);
+
+			f = new File("/sys/class/leds/kpdbl-lut-2/brightness");
+			if (f.exists())
+				leds.put("kpdbl-lut-2", f);
+
+			f = new File("/sys/class/leds/kpdbl-pwm-3/brightness");
+			if (f.exists())
+				leds.put("kpdbl-pwm-3", f);
+
+			f = new File("/sys/class/leds/kpdbl-pwm-4/brightness");
+			if (f.exists())
+				leds.put("kpdbl-pwm-4", f);
+
+			f = new File("/sys/class/leds/R/brightness");
+			if (f.exists())
+				leds.put("back-red", f);
+			f = new File("/sys/class/leds/G/brightness");
+			if (f.exists())
+				leds.put("back-green", f);
+			f = new File("/sys/class/leds/B/brightness");
+			if (f.exists())
+				leds.put("back-blue", f);
+		}
+
+		protected void probe_trigger() {
+			File f;
+
+			f = new File("/sys/class/leds/red/on_off_ms");
+			if (f.exists())
+				leds.put("on-off-red", f);
+			f = new File("/sys/class/leds/green/on_off_ms");
+			if (f.exists())
+				leds.put("on-off-green", f);
+			f = new File("/sys/class/leds/blue/on_off_ms");
+			if (f.exists())
+				leds.put("on-off-blue", f);
+
+			f = new File("/sys/class/leds/red/rgb_start");
+			if (f.exists())
+				leds.put("trigger", f);
+			// f = new File("/sys/class/leds/green/rgb_start");
+			// if (f.exists())
+			// leds.put("trigger-green", f);
+			// f = new File("/sys/class/leds/blue/rgb_start");
+			// if (f.exists())
+			// leds.put("trigger-blue", f);
+		}
+
+		protected void finalCheckBeforeStart() {
+			boolean fileNotFound = false;
+			boolean ioException = false;
+			try {
+				postValueToFile(0, "red");
+			} catch (FileNotFoundException e) {
+				fileNotFound = true;
+			} catch (IOException e) {
+				ioException = true;
+			}
+
+			if (fileNotFound)// try to fix this problem
+			{
+				String filePath = dir.getAbsolutePath();
+				if (RootTools.isAccessGiven()) {
+
+					final StringBuilder userNameStrBuilder = new StringBuilder();
+
+					Command unameCmd = new Command(0, "ls -la " + filePath
+							+ "/../") {
+
+						@Override
+						public void commandCompleted(int arg0, int arg1) {
+							// TODO Auto-generated method stub
+
+						}
+
+						@Override
+						public void commandOutput(int arg0, String arg1) {
+							if (arg1.contains("files"))// that's it.
+							{
+								String[] strs = arg1.split(" ");
+								Log.d("visualizer", "user name = " + strs[1]);
+								userNameStrBuilder.append(strs[1]);
+							}
+						}
+
+						@Override
+						public void commandTerminated(int arg0, String arg1) {
+							// TODO Auto-generated method stub
+
+						}
+
+					};
+					try {
+						Shell sh = RootTools.getShell(true);
+						sh.add(unameCmd);
+						String uname = userNameStrBuilder.toString();
+						if (!uname.equals("")) {
+							for (String name : leds.keySet()) {
+								Command chownCmd = new Command(0, "chown "
+										+ uname + ":" + uname + " "
+										+ leds.get(name).getAbsolutePath()) {
+
+									@Override
+									public void commandCompleted(int arg0,
+											int arg1) {
+										// TODO Auto-generated method stub
+
+									}
+
+									@Override
+									public void commandOutput(int arg0,
+											String arg1) {
+										Log.d("visualizer", arg1);
+									}
+
+									@Override
+									public void commandTerminated(int arg0,
+											String arg1) {
+										// TODO Auto-generated method stub
+
+										Log.d("visualizer", arg1);
+									}
+
+								};
+								sh.add(chownCmd);
+							}
+						}
+					} catch (IOException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					} catch (TimeoutException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					} catch (RootDeniedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+				}
+			}
 
 		}
 
@@ -533,7 +725,8 @@ public class MainActivity extends ActionBarActivity {
 
 				probe_rgb();
 				probe_logo();// for Xperia TX
-				probe_button_backlight(); // for my beloved Xperia SL
+				probe_special(); // for my beloved Xperia SL
+				probe_trigger(); // for Nexus 5
 
 				if (RootTools.isAccessGiven()) {
 
@@ -553,12 +746,12 @@ public class MainActivity extends ActionBarActivity {
 				// .exec("su -c '"
 				// + "'");
 			} catch (Exception e) {
-				AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
-						getActivity());
 				StringWriter sw = new StringWriter();
 				PrintWriter pw = new PrintWriter(sw);
 				e.printStackTrace(pw);
 				pw.close();
+				AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
+						getActivity());
 				// dlgBuilder.setMessage(e.toString()+"\n"+e.);
 				dlgBuilder.setMessage(sw.toString());
 				dlgBuilder.setTitle("Alert");
@@ -589,6 +782,9 @@ public class MainActivity extends ActionBarActivity {
 						// IS WRONG
 
 						if (initialize()) {
+
+							finalCheckBeforeStart();
+
 							startVisualizer();
 							if (started)
 								b.setText("STOP");
