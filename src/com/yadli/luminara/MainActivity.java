@@ -70,6 +70,8 @@ public class MainActivity extends ActionBarActivity {
 	static int triggerCount = 0;
 	static float threshold = 2.0f;
 	static int triggerPos = 0;
+	static int Fs = -1;
+	static int N = -1;
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
@@ -148,14 +150,14 @@ public class MainActivity extends ActionBarActivity {
 	}
 
 	private static int boost(int val) {
-		val *= 1.5;
+		val *= 1.2;
 		if (val > 255)
 			val = 255;
 		return val;
 	}
 
 	private static void onFFTData(byte[] bytes) {
-		audioEngine_v1(bytes);
+		audioEngine_v3(bytes);
 		periodicalCheck();
 	}
 
@@ -170,15 +172,15 @@ public class MainActivity extends ActionBarActivity {
 			Log.d("visualizer", "threshold down to " + threshold);
 		}
 
-		if (threshold < 1.1f)
-			threshold = 1.1f;
+		if (threshold < 1.5f)
+			threshold = 1.5f;
 	}
 
 	protected static void periodicalCheck() {
 		++loopCount;
 		if (loopCount == LOOP_PERIOD) {
 
-			 adaptivaeThresholdCalc();
+			adaptivaeThresholdCalc();
 
 			// reset loopCount
 			loopCount = 0;
@@ -188,6 +190,184 @@ public class MainActivity extends ActionBarActivity {
 		}
 	}
 
+	static int[] bark_bands = new int[] { 100, 200, 300, 400, 510, 630, 770,
+			920, 1080, 1270, 1480, 1720, 2000, 2320, 2700, 3150, 3700, 4400,
+			5300, 6400, 7700, 9500, 12000, 15500 };
+	static int[] bark_bands_table = null;
+	static float[] amplitudes = new float[24];
+	static float[] rgb = new float[3];
+
+	static float current_hue_percent = 0;
+
+	protected static void audioEngine_v3(byte[] bytes) {
+
+		int len = bytes.length;
+
+		if (bark_bands_table == null) {
+			bark_bands_table = new int[bytes.length];
+			int bIndex = 0;
+			for (int i = 0; i < len; i += 2) {
+				int freq = (i / 2 * Fs) / (N);
+				if (freq > bark_bands[bIndex] && bIndex < 23) {
+					Log.d("barkband", "freq = " + freq + ", b= " + bIndex
+							+ "i=" + i);
+					bIndex++;
+				}
+				bark_bands_table[i] = bIndex;
+			}
+		}
+
+		int index = 2;// 0 and 1 are real
+						// part of F0 and
+						// Fn/2
+
+		int lowBound = 20;
+
+		rms = 0.0f;
+		for (int i = 0; i < 24; ++i)
+			amplitudes[i] = 0.f;
+
+		for (; index < len; index += 2) {
+			int re = bytes[index];
+			int im = bytes[index + 1];
+			float val = (float) Math.sqrt(re * re + im * im);
+
+			if (index <= lowBound)
+				rms += val;
+
+			amplitudes[bark_bands_table[index]] += val / 360.0f;
+		}
+
+		// {{{ Intensity
+		// adaptive scaling
+
+		if (rms > rmsMax)
+			rmsMax = rms;
+		else {
+			rmsMax *= decayStrength;
+			if (rmsMax < rmsMinMax)
+				rmsMax = rmsMinMax;
+		}
+
+		float intensity = rms / rmsMax;
+		// normalize intensity
+
+		if (intensity < intensityMin)
+			intensityMin = intensity;
+		else {
+			intensityMin *= 1.1;
+			if (intensityMin < 0.1f)
+				intensityMin = 0.1f;
+			// intensityMin = (intensity + intensityMin) / 2;
+		}
+
+		if (intensity > intensityMax)
+			intensityMax = intensity;
+		else
+			intensityMax *= decayStrength;
+		// intensityMax = (intensity + intensityMax) / 2;
+
+		if (intensityMin > intensityMax) {
+			if (intensityMin > 0.5)
+				intensityMin *= decayStrength;
+			else
+				intensityMin /= decayStrength;
+			intensityMax = intensityMin + 0.01f;
+		}
+		float range = intensityMax - intensityMin;
+
+		intensity = (intensity - intensityMin) / range;
+		if (intensity < 0)
+			intensity = 0;
+		if (intensity > 1)
+			intensity = 1;
+
+		if (intensity < intensityHistory * threshold) {
+			intensity = (float) (intensity * 0.1 + intensityHistory * 0.9);
+			intensity *= 0.7;
+		} else {
+			intensity = 1;
+			++triggerCount;
+			if (loopCount - triggerPos > 3) {
+				triggerPos = loopCount;
+				// XXX something's wrong
+			}
+		}
+		intensityHistory = intensity;
+		// }}}
+
+		rgb[0] = rgb[1] = rgb[2] = 0.f;
+		for (int i = 0; i < 24; ++i)
+			rgb[i / 8] += amplitudes[i] * amplitudes[i];
+
+		rgb[0] = (float) Math.sqrt(rgb[0]);
+		rgb[1] = (float) Math.sqrt(rgb[1]);
+		rgb[2] = (float) Math.sqrt(rgb[2]);
+
+		float maxVal = -1;
+		int maxIndex = 0;
+
+		for (int i = 0; i < 12; ++i)
+			if (amplitudes[i] > maxVal) {
+				maxVal = amplitudes[i];
+				maxIndex = i;
+			}
+		float percent = (float) maxIndex / 12.0f;
+		current_hue_percent = current_hue_percent * 0.85f + percent * 0.15f;
+		Log.d("percent", "percent="+current_hue_percent);
+		calculate_rgb(current_hue_percent);
+
+		 int loVal = (int) (r * intensity);
+		 int miVal = (int) (g * intensity);
+		 int hiVal = (int) (b * intensity);
+		 loVal = boost(loVal);
+		 miVal = boost(miVal);
+		 hiVal = boost(hiVal);
+
+		// if(rgb[0] > loMax)
+		// loMax = rgb[0];
+		// if(rgb[1] > miMax)
+		// miMax = rgb[1];
+		// if(rgb[2] > hiMax)
+		// hiMax = rgb[2];
+		// if(hiMax < 50)
+		// hiMax = 50;
+		// Log.d("visualizer", "r=" + rgb[0] + " g=" + rgb[1] + " b=" + rgb[2]);
+
+		// int loVal = (int) (rgb[0] * 255 / loMax * intensity);
+		// int miVal = (int) (rgb[1] * 255 / miMax * intensity);
+		// int hiVal = (int) (rgb[2] * 255 / hiMax * intensity);
+
+		// int loVal = (int) (rgb[0] * 255 * intensity);
+		// int miVal = (int) (rgb[1] * 255 * intensity);
+		// int hiVal = (int) (rgb[2] * 255 * intensity);
+		//
+		// loVal = boost(loVal);
+
+		// miVal = boost(miVal);
+		// hiVal = boost(hiVal);
+		// Log.d("visualizer", "lo = " + loVal + " mid=" + miVal + " hi="
+		// + hiVal + "lm=" + loMax + " mm=" + miMax + " hm=" + hiMax);
+
+		// Log.d("visualizer", "rms = \t"+rms + "\tmax = \t"+rmsMax +
+		// "\tintensity=\t"+intensity);
+		// Log.d("visualizer", "peak = \t"+peak + "\tmax = \t"+peakMax +
+		// "\tintensity=\t"+intensity);
+
+		// Time to set brightness. Don't go
+		// crazy!
+
+		// LEDOperator op = new LEDOperator();
+		// op.execute(new int[] { loVal, miVal,
+		// hiVal });
+
+		// int loVal = (int) (rgb[0] * 255 / loMax);
+		// int miVal = (int) (rgb[1] * 255 / miMax);
+		// int hiVal = (int) (rgb[2] * 255 / hiMax);
+
+		commit(loVal, miVal, hiVal);
+	}
+
 	static float[] history_fft = null;
 	static float[] history_weight = null;
 	static int current_follow_idx = -1;
@@ -195,8 +375,7 @@ public class MainActivity extends ActionBarActivity {
 	static float strength = 0;
 	static int r = 0, g = 0, b = 0;
 
-	protected static void calculate_rgb() {
-		float percent = (float) current_follow_idx / (float) history_fft.length;
+	protected static void calculate_rgb(float percent) {
 		percent *= 2;
 		if (percent > 1)
 			percent = 1;
@@ -269,21 +448,22 @@ public class MainActivity extends ActionBarActivity {
 							history_weight[index] = 1;
 							change = true;
 						}
-						
-						if (!picking && current_follow_idx != -1)
-						{
-							if(val / history_fft[index] < strength)
+
+						if (!picking && current_follow_idx != -1) {
+							if (val / history_fft[index] < strength)
 								change = false;
 						}
-						
 
 						if (change) {
 							Log.d("visualizer", "follow start on " + index
-									+ ", val= " + val + " threshold=" + threshold);
+									+ ", val= " + val + " threshold="
+									+ threshold);
 							current_follow_idx = index;
 							current_follow_value = val;
 							strength = 0.75f;
-							calculate_rgb();
+							float percent = (float) current_follow_idx
+									/ (float) history_fft.length;
+							calculate_rgb(percent);
 							picking = true;
 						}
 					}
@@ -310,7 +490,7 @@ public class MainActivity extends ActionBarActivity {
 		int low = 0, mid = 0, high = 0;
 		int lowBound = 20;
 		int midBound = 100;// 20k / 20 = 1Khz
-								// as midbound
+							// as midbound
 
 		rms = 0.0f;
 
@@ -514,15 +694,31 @@ public class MainActivity extends ActionBarActivity {
 				postValueToFile(loVal, "back-red");
 				postValueToFile(miVal, "back-green");
 				postValueToFile(hiVal, "back-blue");
+				
+				// Xperia T series
 
 				postValueToFile((loVal + miVal) / 2, "logo1");
 				postValueToFile((hiVal + miVal) / 2, "logo2");
 				postValueToFile((hiVal + miVal + loVal) / 3, "button");
 
+				// Oppo Skyline
+				
 				// postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-lut-2");
 				// postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-pwm-3");
-				postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-lut-4");
+				postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-lut-4");//not working
+				
+				// Xperia SP
+				postValueToFile(loVal, "SP-R1");
+				postValueToFile(miVal, "SP-G1");
+				postValueToFile(hiVal, "SP-B1");
 
+				postValueToFile(loVal, "SP-R2");
+				postValueToFile(miVal, "SP-G2");
+				postValueToFile(hiVal, "SP-B2");
+
+				postValueToFile(loVal, "SP-R3");
+				postValueToFile(miVal, "SP-G3");
+				postValueToFile(hiVal, "SP-B3");
 				// Nexus N5 fix
 				postValueToFile(50, 0, "on-off-red");
 				postValueToFile(50, 0, "on-off-green");
@@ -576,8 +772,19 @@ public class MainActivity extends ActionBarActivity {
 		try {
 
 			visualizer = new Visualizer(0);
-			visualizer.setCaptureSize(Visualizer.getCaptureSizeRange()[1]);
+			int[] ranges = Visualizer.getCaptureSizeRange();
+			int idx = -1;
+			for (int i = 0; i < ranges.length; ++i)
+				if (ranges[i] == 256)
+					idx = i;
+			if (idx == -1)
+				idx = 1;
+			visualizer.setCaptureSize(ranges[idx]);
 			hiMax = miMax = loMax = minimalMax;
+			Fs = visualizer.getSamplingRate() / 1000;
+			N = visualizer.getCaptureSize();
+			Log.d("visualizer", "Sampling rate = " + Fs);
+			Log.d("visualizer", "Capture size = " + N);
 			visualizer.setDataCaptureListener(
 					new Visualizer.OnDataCaptureListener() {
 						public void onWaveFormDataCapture(
@@ -715,6 +922,45 @@ public class MainActivity extends ActionBarActivity {
 			f = new File("/sys/class/leds/B/brightness");
 			if (f.exists())
 				leds.put("back-blue", f);
+
+//			LED1_R
+//			LED1_G
+//			LED1_B
+//			LED2_R
+//			LED2_G
+//			LED2_B
+//			LED3_R
+//			LED3_G
+//			LED3_B
+			f = new File("/sys/class/leds/LED1_R/brightness");
+			if (f.exists())
+				leds.put("SP-R1", f);
+			f = new File("/sys/class/leds/LED2_R/brightness");
+			if (f.exists())
+				leds.put("SP-R2", f);
+			f = new File("/sys/class/leds/LED3_R/brightness");
+			if (f.exists())
+				leds.put("SP-R3", f);
+
+			f = new File("/sys/class/leds/LED1_G/brightness");
+			if (f.exists())
+				leds.put("SP-G1", f);
+			f = new File("/sys/class/leds/LED2_G/brightness");
+			if (f.exists())
+				leds.put("SP-G2", f);
+			f = new File("/sys/class/leds/LED3_G/brightness");
+			if (f.exists())
+				leds.put("SP-G3", f);
+
+			f = new File("/sys/class/leds/LED1_B/brightness");
+			if (f.exists())
+				leds.put("SP-B1", f);
+			f = new File("/sys/class/leds/LED2_B/brightness");
+			if (f.exists())
+				leds.put("SP-B2", f);
+			f = new File("/sys/class/leds/LED3_B/brightness");
+			if (f.exists())
+				leds.put("SP-B3", f);
 		}
 
 		protected void probe_trigger() {
@@ -742,96 +988,96 @@ public class MainActivity extends ActionBarActivity {
 		}
 
 		protected void finalCheckBeforeStart() {
-			boolean fileNotFound = false;
-			boolean ioException = false;
-			try {
-				postValueToFile(0, "red");
-			} catch (FileNotFoundException e) {
-				fileNotFound = true;
-			} catch (IOException e) {
-				ioException = true;
-			}
-
-			if (fileNotFound)// try to fix this problem
-			{
-				String filePath = dir.getAbsolutePath();
-				if (RootTools.isAccessGiven()) {
-
-					final StringBuilder userNameStrBuilder = new StringBuilder();
-
-					Command unameCmd = new Command(0, "ls -la " + filePath
-							+ "/../") {
-
-						@Override
-						public void commandCompleted(int arg0, int arg1) {
-							// TODO Auto-generated method stub
-
-						}
-
-						@Override
-						public void commandOutput(int arg0, String arg1) {
-							if (arg1.contains("files"))// that's it.
-							{
-								String[] strs = arg1.split(" ");
-								Log.d("visualizer", "user name = " + strs[1]);
-								userNameStrBuilder.append(strs[1]);
-							}
-						}
-
-						@Override
-						public void commandTerminated(int arg0, String arg1) {
-							// TODO Auto-generated method stub
-
-						}
-
-					};
-					try {
-						Shell sh = RootTools.getShell(true);
-						sh.add(unameCmd);
-						String uname = userNameStrBuilder.toString();
-						if (!uname.equals("")) {
-							for (String name : leds.keySet()) {
-								Command chownCmd = new Command(0, "chown "
-										+ uname + ":" + uname + " "
-										+ leds.get(name).getAbsolutePath()) {
-
-									@Override
-									public void commandCompleted(int arg0,
-											int arg1) {
-										// TODO Auto-generated method stub
-
-									}
-
-									@Override
-									public void commandOutput(int arg0,
-											String arg1) {
-										Log.d("visualizer", arg1);
-									}
-
-									@Override
-									public void commandTerminated(int arg0,
-											String arg1) {
-										// TODO Auto-generated method stub
-
-										Log.d("visualizer", arg1);
-									}
-
-								};
-								sh.add(chownCmd);
-							}
-						}
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					} catch (TimeoutException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					} catch (RootDeniedException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-				}
-			}
+			// boolean fileNotFound = false;
+			// boolean ioException = false;
+			// try {
+			// postValueToFile(0, "red");
+			// } catch (FileNotFoundException e) {
+			// fileNotFound = true;
+			// } catch (IOException e) {
+			// ioException = true;
+			// }
+			// XXX problem with this
+			// if (fileNotFound)// try to fix this problem
+			// {
+			// String filePath = dir.getAbsolutePath();
+			// if (RootTools.isAccessGiven()) {
+			//
+			// final StringBuilder userNameStrBuilder = new StringBuilder();
+			//
+			// Command unameCmd = new Command(0, "ls -la " + filePath
+			// + "/../") {
+			//
+			// @Override
+			// public void commandCompleted(int arg0, int arg1) {
+			// // TODO Auto-generated method stub
+			//
+			// }
+			//
+			// @Override
+			// public void commandOutput(int arg0, String arg1) {
+			// if (arg1.contains("files"))// that's it.
+			// {
+			// String[] strs = arg1.split(" ");
+			// Log.d("visualizer", "user name = " + strs[1]);
+			// userNameStrBuilder.append(strs[1]);
+			// }
+			// }
+			//
+			// @Override
+			// public void commandTerminated(int arg0, String arg1) {
+			// // TODO Auto-generated method stub
+			//
+			// }
+			//
+			// };
+			// try {
+			// Shell sh = RootTools.getShell(true);
+			// sh.add(unameCmd);
+			// String uname = userNameStrBuilder.toString();
+			// if (!uname.equals("")) {
+			// for (String name : leds.keySet()) {
+			// Command chownCmd = new Command(0, "chown "
+			// + uname + ":" + uname + " "
+			// + leds.get(name).getAbsolutePath()) {
+			//
+			// @Override
+			// public void commandCompleted(int arg0,
+			// int arg1) {
+			// // TODO Auto-generated method stub
+			//
+			// }
+			//
+			// @Override
+			// public void commandOutput(int arg0,
+			// String arg1) {
+			// Log.d("visualizer", arg1);
+			// }
+			//
+			// @Override
+			// public void commandTerminated(int arg0,
+			// String arg1) {
+			// // TODO Auto-generated method stub
+			//
+			// Log.d("visualizer", arg1);
+			// }
+			//
+			// };
+			// sh.add(chownCmd);
+			// }
+			// }
+			// } catch (IOException e) {
+			// // TODO Auto-generated catch block
+			// e.printStackTrace();
+			// } catch (TimeoutException e) {
+			// // TODO Auto-generated catch block
+			// e.printStackTrace();
+			// } catch (RootDeniedException e) {
+			// // TODO Auto-generated catch block
+			// e.printStackTrace();
+			// }
+			// }
+			// }
 
 		}
 
@@ -851,6 +1097,10 @@ public class MainActivity extends ActionBarActivity {
 
 					Shell sh = RootTools.getShell(true);
 
+					CommandCapture rmCmd = new CommandCapture(0, "rm -f "
+							+ dir.getAbsolutePath() + "/*");
+					sh.add(rmCmd);
+
 					for (String key : leds.keySet()) {
 						File f = new File(dir, key);
 						CommandCapture cmd = hackBrightnessFile(leds.get(key)
@@ -858,6 +1108,12 @@ public class MainActivity extends ActionBarActivity {
 						sh.add(cmd);
 						leds.put(key, f);
 					}
+					
+					while(sh.isExecuting)
+					{
+						Thread.sleep(1);
+					}
+					
 					return true;
 				}
 
