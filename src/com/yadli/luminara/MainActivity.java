@@ -25,6 +25,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.media.audiofx.Visualizer;
+import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Environment;
@@ -51,7 +52,6 @@ public class MainActivity extends ActionBarActivity {
 	static boolean started = false;
 	static boolean onLazyCommit = false;
 	static boolean onFatalError = false;
-	static int lazyLatch = 0;
 	static int commit_clk = 0;
 	static boolean onPowerSave = false;
 	static Visualizer visualizer = null;
@@ -59,7 +59,6 @@ public class MainActivity extends ActionBarActivity {
 	static private HashMap<String, File> leds;
 
 	static float loMax, miMax, hiMax;
-	static float rms = 0.0f;
 	static float rmsMax = 1.0f;
 	static final float rmsMinMax = 1.0f;
 	static float intensityMin = 0.5f;
@@ -109,7 +108,16 @@ public class MainActivity extends ActionBarActivity {
 		// automatically handle clicks on the Home/Up button, so long
 		// as you specify a parent activity in AndroidManifest.xml.
 		int id = item.getItemId();
+		if (id == R.id.donate) {
+			donate();
+		}
 		return super.onOptionsItemSelected(item);
+	}
+
+	private void donate() {
+		Intent goToMarket = new Intent(Intent.ACTION_VIEW).setData(Uri
+				.parse("market://details?id=com.yadli.luminaradonationkey"));
+		startActivity(goToMarket);
 	}
 
 	@Override
@@ -156,7 +164,7 @@ public class MainActivity extends ActionBarActivity {
 		return val;
 	}
 
-	private static void onFFTData(byte[] bytes) {
+	private static void onFFTData(byte[] bytes, int samplingRate) {
 		audioEngine_v3(bytes);
 		periodicalCheck();
 	}
@@ -198,6 +206,7 @@ public class MainActivity extends ActionBarActivity {
 	static float[] rgb = new float[3];
 
 	static float current_hue_percent = 0;
+	static SpectrumView spectrumView = null;
 
 	protected static void audioEngine_v3(byte[] bytes) {
 
@@ -223,24 +232,51 @@ public class MainActivity extends ActionBarActivity {
 
 		int lowBound = 20;
 
-		rms = 0.0f;
 		for (int i = 0; i < 24; ++i)
 			amplitudes[i] = 0.f;
 
 		for (; index < len; index += 2) {
-			int re = bytes[index];
-			int im = bytes[index + 1];
-			float val = (float) Math.sqrt(re * re + im * im);
+			float re = bytes[index] / 255.f;
+			float im = bytes[index + 1] / 255.f;
+			float val = (float) (re * re) + (float) (im * im);
 
-			if (index <= lowBound)
-				rms += val;
-
-			amplitudes[bark_bands_table[index]] += val / 360.0f;
+			amplitudes[bark_bands_table[index]] += val;
 		}
 
-		// {{{ Intensity
-		// adaptive scaling
+		for (int i = 0; i < 24; ++i)
+			amplitudes[i] = (float) Math.sqrt(amplitudes[i]) * 4;
 
+		float intensity = calculateIntensity(amplitudes[0]);
+
+		// amplitudes[23] = 0;
+
+		float maxVal = -1;
+		int maxIndex = 0;
+
+		for (int i = 0; i < 12; ++i)
+			if (amplitudes[i] > maxVal) {
+				maxVal = amplitudes[i];
+				maxIndex = i;
+			}
+		float percent = (float) maxIndex / 12.0f;
+		current_hue_percent = current_hue_percent * 0.85f + percent * 0.15f;
+		calculate_rgb(current_hue_percent);
+
+		if (spectrumView != null) {
+			spectrumView.setPivot(current_hue_percent, r, g, b, intensity);
+			spectrumView.update(amplitudes);
+		}
+
+		int loVal = (int) (r * intensity);
+		int miVal = (int) (g * intensity);
+		int hiVal = (int) (b * intensity);
+		loVal = boost(loVal);
+		miVal = boost(miVal);
+		hiVal = boost(hiVal);
+		commit(loVal, miVal, hiVal);
+	}
+
+	protected static float calculateIntensity(float rms) {
 		if (rms > rmsMax)
 			rmsMax = rms;
 		else {
@@ -294,78 +330,8 @@ public class MainActivity extends ActionBarActivity {
 			}
 		}
 		intensityHistory = intensity;
-		// }}}
 
-		rgb[0] = rgb[1] = rgb[2] = 0.f;
-		for (int i = 0; i < 24; ++i)
-			rgb[i / 8] += amplitudes[i] * amplitudes[i];
-
-		rgb[0] = (float) Math.sqrt(rgb[0]);
-		rgb[1] = (float) Math.sqrt(rgb[1]);
-		rgb[2] = (float) Math.sqrt(rgb[2]);
-
-		float maxVal = -1;
-		int maxIndex = 0;
-
-		for (int i = 0; i < 12; ++i)
-			if (amplitudes[i] > maxVal) {
-				maxVal = amplitudes[i];
-				maxIndex = i;
-			}
-		float percent = (float) maxIndex / 12.0f;
-		current_hue_percent = current_hue_percent * 0.85f + percent * 0.15f;
-		Log.d("percent", "percent="+current_hue_percent);
-		calculate_rgb(current_hue_percent);
-
-		 int loVal = (int) (r * intensity);
-		 int miVal = (int) (g * intensity);
-		 int hiVal = (int) (b * intensity);
-		 loVal = boost(loVal);
-		 miVal = boost(miVal);
-		 hiVal = boost(hiVal);
-
-		// if(rgb[0] > loMax)
-		// loMax = rgb[0];
-		// if(rgb[1] > miMax)
-		// miMax = rgb[1];
-		// if(rgb[2] > hiMax)
-		// hiMax = rgb[2];
-		// if(hiMax < 50)
-		// hiMax = 50;
-		// Log.d("visualizer", "r=" + rgb[0] + " g=" + rgb[1] + " b=" + rgb[2]);
-
-		// int loVal = (int) (rgb[0] * 255 / loMax * intensity);
-		// int miVal = (int) (rgb[1] * 255 / miMax * intensity);
-		// int hiVal = (int) (rgb[2] * 255 / hiMax * intensity);
-
-		// int loVal = (int) (rgb[0] * 255 * intensity);
-		// int miVal = (int) (rgb[1] * 255 * intensity);
-		// int hiVal = (int) (rgb[2] * 255 * intensity);
-		//
-		// loVal = boost(loVal);
-
-		// miVal = boost(miVal);
-		// hiVal = boost(hiVal);
-		// Log.d("visualizer", "lo = " + loVal + " mid=" + miVal + " hi="
-		// + hiVal + "lm=" + loMax + " mm=" + miMax + " hm=" + hiMax);
-
-		// Log.d("visualizer", "rms = \t"+rms + "\tmax = \t"+rmsMax +
-		// "\tintensity=\t"+intensity);
-		// Log.d("visualizer", "peak = \t"+peak + "\tmax = \t"+peakMax +
-		// "\tintensity=\t"+intensity);
-
-		// Time to set brightness. Don't go
-		// crazy!
-
-		// LEDOperator op = new LEDOperator();
-		// op.execute(new int[] { loVal, miVal,
-		// hiVal });
-
-		// int loVal = (int) (rgb[0] * 255 / loMax);
-		// int miVal = (int) (rgb[1] * 255 / miMax);
-		// int hiVal = (int) (rgb[2] * 255 / hiMax);
-
-		commit(loVal, miVal, hiVal);
+		return intensity;
 	}
 
 	static float[] history_fft = null;
@@ -404,233 +370,83 @@ public class MainActivity extends ActionBarActivity {
 		}
 	}
 
-	protected static void audioEngine_v2(byte[] bytes) {
-		int len = bytes.length;
-		if (history_fft == null)
-			history_fft = new float[len];
-		if (history_weight == null)
-			history_weight = new float[len];
-		int index = 2;
-		boolean picking = false;
-		strength *= 0.4f;
-		if (current_follow_idx != -1)
-			history_weight[current_follow_idx] *= 0.8f;
-
-		if (strength < 0.1f)
-			current_follow_idx = -1;
-
-		if (current_follow_idx != -1) {
-			int re = bytes[current_follow_idx];
-			int im = bytes[current_follow_idx + 1];
-			float val = (float) Math.sqrt(re * re + im * im);
-			strength = val / current_follow_value * 0.75f;
-			if (strength < 0.9f) {
-				Log.d("visualizer", "follow end");
-				current_follow_idx = -1;
-			}
-		}
-
-		for (; index < len; index += 2) {
-			int re = bytes[index];
-			int im = bytes[index + 1];
-			float val = (float) Math.sqrt(re * re + im * im);
-
-			if (index != current_follow_idx) {
-
-				float threshold = 6.0f - (index * 12.0f / len);
-
-				if (val > 20) {// it should be at least this high.
-					if (val > history_fft[index] * threshold) {
-						boolean change = !picking;
-
-						if (picking
-								&& history_weight[index] < history_weight[current_follow_idx]) {
-							history_weight[index] = 1;
-							change = true;
-						}
-
-						if (!picking && current_follow_idx != -1) {
-							if (val / history_fft[index] < strength)
-								change = false;
-						}
-
-						if (change) {
-							Log.d("visualizer", "follow start on " + index
-									+ ", val= " + val + " threshold="
-									+ threshold);
-							current_follow_idx = index;
-							current_follow_value = val;
-							strength = 0.75f;
-							float percent = (float) current_follow_idx
-									/ (float) history_fft.length;
-							calculate_rgb(percent);
-							picking = true;
-						}
-					}
-				}
-			}
-
-			history_fft[index] = val;
-		}
-
-		if (strength > 1)
-			strength = 1;
-		if (strength < 0)
-			strength = 0;
-
-		commit((int) (strength * r), (int) (strength * g), (int) (strength * b));
-	}
-
-	protected static void audioEngine_v1(byte[] bytes) {
-		int len = bytes.length;
-		int index = 2;// 0 and 1 are real
-						// part of F0 and
-						// Fn/2
-
-		int low = 0, mid = 0, high = 0;
-		int lowBound = 20;
-		int midBound = 100;// 20k / 20 = 1Khz
-							// as midbound
-
-		rms = 0.0f;
-
-		for (; index < len; index += 2) {
-			int re = bytes[index];
-			int im = bytes[index + 1];
-			int val = (int) Math.sqrt(re * re + im * im);
-
-			if (index <= lowBound)
-				rms += val;
-
-			if (index <= lowBound) {
-				low += val;
-			} else if (index <= midBound) {
-				mid += val;
-			} else {
-				high += val;
-			}
-		}
-
-		// adaptive scaling
-
-		if (low > loMax)
-			loMax = low;
-		else {
-			loMax *= decayStrength;
-			if (loMax < minimalMax) {
-				loMax = minimalMax;
-			}
-		}
-		if (mid > miMax)
-			miMax = mid;
-		else {
-			miMax *= decayStrength;
-			if (miMax < minimalMax)
-				miMax = minimalMax;
-		}
-		if (high > hiMax)
-			hiMax = high;
-		else {
-			hiMax *= decayStrength;
-			if (hiMax < minimalMax)
-				hiMax = minimalMax;
-		}
-
-		if (rms > rmsMax)
-			rmsMax = rms;
-		else {
-			rmsMax *= decayStrength;
-			if (rmsMax < rmsMinMax)
-				rmsMax = rmsMinMax;
-		}
-
-		float intensity = rms / rmsMax;
-		// normalize intensity
-
-		if (intensity < intensityMin)
-			intensityMin = intensity;
-		else {
-			intensityMin *= 1.1;
-			if (intensityMin < 0.1f)
-				intensityMin = 0.1f;
-			// intensityMin = (intensity + intensityMin) / 2;
-		}
-
-		if (intensity > intensityMax)
-			intensityMax = intensity;
-		else
-			intensityMax *= decayStrength;
-		// intensityMax = (intensity + intensityMax) / 2;
-
-		if (intensityMin > intensityMax) {
-			if (intensityMin > 0.5)
-				intensityMin *= decayStrength;
-			else
-				intensityMin /= decayStrength;
-			intensityMax = intensityMin + 0.01f;
-		}
-		float range = intensityMax - intensityMin;
-
-		intensity = (intensity - intensityMin) / range;
-		if (intensity < 0)
-			intensity = 0;
-		if (intensity > 1)
-			intensity = 1;
-
-		if (intensity < intensityHistory * threshold) {
-			intensity = (float) (intensity * 0.1 + intensityHistory * 0.9);
-			intensity *= 0.7;
-		} else {
-			intensity = 1;
-			++triggerCount;
-			if (loopCount - triggerPos > 3) {
-				triggerPos = loopCount;
-				// XXX something's wrong
-			}
-		}
-		intensityHistory = intensity;
-
-		// intensity = (float) Math.sqrt(intensity);
-		// intensity = (float) Math.sqrt(intensity);
-
-		// if (intensity > intensityMax * 0.6)
-		// Log.d("visualizer", "Trigger");
-
-		// Log.d("visualizer", "range = \t" + range + "\tmax = \t"
-		// + intensityMax + "\tmin=\t" + intensityMin + "\tval=\t"
-		// + intensity);
-
-		// float intensity = peak / peakMax;
-		// intensity *= intensity * intensity * intensity * intensity;
-
-		// int loVal = (int) (255 * intensity);
-		// int miVal = (int) (255 * intensity);
-		// int hiVal = (int) (255 * intensity);
-
-		int loVal = (int) (low * 255 / loMax * intensity);
-		int miVal = (int) (mid * 255 / miMax * intensity);
-		int hiVal = (int) (high * 255 / hiMax * intensity);
-
-		// loVal = boost(loVal);
-		miVal = boost(miVal);
-		hiVal = boost(hiVal);
-		// Log.d("visualizer", "lo = " + loVal + " mid=" + miVal + " hi="
-		// + hiVal + "lm=" + loMax + " mm=" + miMax + " hm=" + hiMax);
-
-		// Log.d("visualizer", "rms = \t"+rms + "\tmax = \t"+rmsMax +
-		// "\tintensity=\t"+intensity);
-		// Log.d("visualizer", "peak = \t"+peak + "\tmax = \t"+peakMax +
-		// "\tintensity=\t"+intensity);
-
-		// Time to set brightness. Don't go
-		// crazy!
-
-		// LEDOperator op = new LEDOperator();
-		// op.execute(new int[] { loVal, miVal,
-		// hiVal });
-
-		commit(loVal, miVal, hiVal);
-	}
+	//
+	// protected static void audioEngine_v2(byte[] bytes) {
+	// int len = bytes.length;
+	// if (history_fft == null)
+	// history_fft = new float[len];
+	// if (history_weight == null)
+	// history_weight = new float[len];
+	// int index = 2;
+	// boolean picking = false;
+	// strength *= 0.4f;
+	// if (current_follow_idx != -1)
+	// history_weight[current_follow_idx] *= 0.8f;
+	//
+	// if (strength < 0.1f)
+	// current_follow_idx = -1;
+	//
+	// if (current_follow_idx != -1) {
+	// int re = bytes[current_follow_idx];
+	// int im = bytes[current_follow_idx + 1];
+	// float val = (float) Math.sqrt(re * re + im * im);
+	// strength = val / current_follow_value * 0.75f;
+	// if (strength < 0.9f) {
+	// Log.d("visualizer", "follow end");
+	// current_follow_idx = -1;
+	// }
+	// }
+	//
+	// for (; index < len; index += 2) {
+	// int re = bytes[index];
+	// int im = bytes[index + 1];
+	// float val = (float) Math.sqrt(re * re + im * im);
+	//
+	// if (index != current_follow_idx) {
+	//
+	// float threshold = 6.0f - (index * 12.0f / len);
+	//
+	// if (val > 20) {// it should be at least this high.
+	// if (val > history_fft[index] * threshold) {
+	// boolean change = !picking;
+	//
+	// if (picking
+	// && history_weight[index] < history_weight[current_follow_idx]) {
+	// history_weight[index] = 1;
+	// change = true;
+	// }
+	//
+	// if (!picking && current_follow_idx != -1) {
+	// if (val / history_fft[index] < strength)
+	// change = false;
+	// }
+	//
+	// if (change) {
+	// Log.d("visualizer", "follow start on " + index
+	// + ", val= " + val + " threshold="
+	// + threshold);
+	// current_follow_idx = index;
+	// current_follow_value = val;
+	// strength = 0.75f;
+	// float percent = (float) current_follow_idx
+	// / (float) history_fft.length;
+	// calculate_rgb(percent);
+	// picking = true;
+	// }
+	// }
+	// }
+	// }
+	//
+	// history_fft[index] = val;
+	// }
+	//
+	// if (strength > 1)
+	// strength = 1;
+	// if (strength < 0)
+	// strength = 0;
+	//
+	// commit((int) (strength * r), (int) (strength * g), (int) (strength * b));
+	// }
 
 	public static void resumeIfOnPowerSave() {
 		if (onPowerSave) {
@@ -657,6 +473,12 @@ public class MainActivity extends ActionBarActivity {
 		if (visualizer != null) {
 			visualizer.setEnabled(false);
 			visualizer.release();
+			try {
+				Thread.sleep(1000);
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
 			commit(0, 0, 0);
 		}
 		visualizer = null;
@@ -664,109 +486,6 @@ public class MainActivity extends ActionBarActivity {
 
 	}
 
-	public static void commit(int loVal, int miVal, int hiVal) {
-		try {
-			boolean needCommit = true;
-
-			if (loVal == 0 && miVal == 0 && hiVal == 0) {
-				if (onLazyCommit)
-					needCommit = false;
-				else {
-					++lazyLatch;
-
-					if (lazyLatch > LAZY_LATCH_THRESHOLD) {
-						Log.d("visualizer", "entering lazy commit mode");
-						onLazyCommit = true;
-					}
-				}
-			} else {
-				onLazyCommit = false;
-				lazyLatch = 0;
-			}
-
-			if (needCommit && !onFatalError) {
-				postValueToFile(loVal, "red");
-				postValueToFile(miVal, "green");
-				postValueToFile(hiVal, "blue");
-
-				// LG G2 back LED support
-
-				postValueToFile(loVal, "back-red");
-				postValueToFile(miVal, "back-green");
-				postValueToFile(hiVal, "back-blue");
-				
-				// Xperia T series
-
-				postValueToFile((loVal + miVal) / 2, "logo1");
-				postValueToFile((hiVal + miVal) / 2, "logo2");
-				postValueToFile((hiVal + miVal + loVal) / 3, "button");
-
-				// Oppo Skyline
-				
-				// postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-lut-2");
-				// postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-pwm-3");
-				postValueToFile((hiVal + miVal + loVal) / 3, "kpdbl-lut-4");//not working
-				
-				// Xperia SP
-				postValueToFile(loVal, "SP-R1");
-				postValueToFile(miVal, "SP-G1");
-				postValueToFile(hiVal, "SP-B1");
-
-				postValueToFile(loVal, "SP-R2");
-				postValueToFile(miVal, "SP-G2");
-				postValueToFile(hiVal, "SP-B2");
-
-				postValueToFile(loVal, "SP-R3");
-				postValueToFile(miVal, "SP-G3");
-				postValueToFile(hiVal, "SP-B3");
-				// Nexus N5 fix
-				postValueToFile(50, 0, "on-off-red");
-				postValueToFile(50, 0, "on-off-green");
-				postValueToFile(50, 0, "on-off-blue");
-
-				postValueToFile(commit_clk++, "trigger");
-			}
-
-		} catch (Exception e) {
-			onFatalError = true;
-			AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
-					currentActivity);
-			StringWriter sw = new StringWriter();
-			PrintWriter pw = new PrintWriter(sw);
-			e.printStackTrace(pw);
-			pw.close();
-			dlgBuilder.setTitle("Failed to write to led interface.");
-			dlgBuilder.setMessage(sw.toString());
-			dlgBuilder.show();
-			e.printStackTrace();
-			stop();
-		}
-
-	}
-
-	public static void postValueToFile(int val, String key) throws IOException {
-		File f;
-		FileOutputStream os;
-		if (leds != null && leds.containsKey(key)) {
-			f = leds.get(key);
-			os = new FileOutputStream(f);
-			os.write(Integer.toString(val).getBytes());
-			os.close();
-		}
-	}
-
-	public static void postValueToFile(int val1, int val2, String key)
-			throws IOException {
-		File f;
-		FileOutputStream os;
-		if (leds != null && leds.containsKey(key)) {
-			f = leds.get(key);
-			os = new FileOutputStream(f);
-			os.write((Integer.toString(val1) + " " + Integer.toString(val2))
-					.getBytes());
-			os.close();
-		}
-	}
 
 	protected static void startVisualizer() {
 		try {
@@ -775,11 +494,12 @@ public class MainActivity extends ActionBarActivity {
 			int[] ranges = Visualizer.getCaptureSizeRange();
 			int idx = -1;
 			for (int i = 0; i < ranges.length; ++i)
-				if (ranges[i] == 256)
+				if (ranges[i] == 1024)
 					idx = i;
 			if (idx == -1)
 				idx = 1;
 			visualizer.setCaptureSize(ranges[idx]);
+			// visualizer.setScalingMode(Visualizer.SCALING_MODE_NORMALIZED);
 			hiMax = miMax = loMax = minimalMax;
 			Fs = visualizer.getSamplingRate() / 1000;
 			N = visualizer.getCaptureSize();
@@ -795,7 +515,7 @@ public class MainActivity extends ActionBarActivity {
 
 						public void onFftDataCapture(Visualizer visualizer,
 								byte[] bytes, int samplingRate) {
-							onFFTData(bytes);
+							onFFTData(bytes, samplingRate);
 						}
 
 					}, Visualizer.getMaxCaptureRate(), false, true);
@@ -854,6 +574,12 @@ public class MainActivity extends ActionBarActivity {
 			f = new File("/sys/class/leds/led_r/brightness");
 			if (f.exists())
 				leds.put("red", f);
+			f = new File("/sys/class/leds/led_r/brightness");
+			if (f.exists())
+				leds.put("red", f);
+			f = new File("/sys/class/leds/lm3533-red/brightness");
+			if (f.exists())
+				leds.put("red", f);
 
 			f = new File("/sys/class/leds/led:rgb_blue/brightness");
 			if (f.exists())
@@ -867,6 +593,9 @@ public class MainActivity extends ActionBarActivity {
 			f = new File("/sys/class/leds/led_b/brightness");
 			if (f.exists())
 				leds.put("blue", f);
+			f = new File("/sys/class/leds/lm3533-blue/brightness");
+			if (f.exists())
+				leds.put("blue", f);
 
 			f = new File("/sys/class/leds/led:rgb_green/brightness");
 			if (f.exists())
@@ -878,6 +607,9 @@ public class MainActivity extends ActionBarActivity {
 			if (f.exists())
 				leds.put("green", f);
 			f = new File("/sys/class/leds/led_g/brightness");
+			if (f.exists())
+				leds.put("green", f);
+			f = new File("/sys/class/leds/lm3533-green/brightness");
 			if (f.exists())
 				leds.put("green", f);
 		}
@@ -901,18 +633,6 @@ public class MainActivity extends ActionBarActivity {
 			if (f.exists())
 				leds.put("button", f);
 
-			f = new File("/sys/class/leds/kpdbl-lut-2/brightness");
-			if (f.exists())
-				leds.put("kpdbl-lut-2", f);
-
-			f = new File("/sys/class/leds/kpdbl-pwm-3/brightness");
-			if (f.exists())
-				leds.put("kpdbl-pwm-3", f);
-
-			f = new File("/sys/class/leds/kpdbl-pwm-4/brightness");
-			if (f.exists())
-				leds.put("kpdbl-pwm-4", f);
-
 			f = new File("/sys/class/leds/R/brightness");
 			if (f.exists())
 				leds.put("back-red", f);
@@ -923,15 +643,7 @@ public class MainActivity extends ActionBarActivity {
 			if (f.exists())
 				leds.put("back-blue", f);
 
-//			LED1_R
-//			LED1_G
-//			LED1_B
-//			LED2_R
-//			LED2_G
-//			LED2_B
-//			LED3_R
-//			LED3_G
-//			LED3_B
+			//Xperia SP
 			f = new File("/sys/class/leds/LED1_R/brightness");
 			if (f.exists())
 				leds.put("SP-R1", f);
@@ -961,6 +673,12 @@ public class MainActivity extends ActionBarActivity {
 			f = new File("/sys/class/leds/LED3_B/brightness");
 			if (f.exists())
 				leds.put("SP-B3", f);
+
+			// Moto G
+
+			f = new File("/sys/class/leds/white/brightness");
+			if (f.exists())
+				leds.put("white", f);
 		}
 
 		protected void probe_trigger() {
@@ -1108,12 +826,11 @@ public class MainActivity extends ActionBarActivity {
 						sh.add(cmd);
 						leds.put(key, f);
 					}
-					
-					while(sh.isExecuting)
-					{
+
+					while (sh.isExecuting) {
 						Thread.sleep(1);
 					}
-					
+
 					return true;
 				}
 
@@ -1143,6 +860,8 @@ public class MainActivity extends ActionBarActivity {
 			View rootView = inflater.inflate(R.layout.fragment_main, container,
 					false);
 			final Button b = (Button) rootView.findViewById(R.id.button1);
+			spectrumView = (SpectrumView) rootView
+					.findViewById(R.id.spectrumView1);
 
 			if (started) {// if the view is recreated, we set text to stop
 				b.setText("STOP");

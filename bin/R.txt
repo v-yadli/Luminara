@@ -248,6 +248,7 @@ int id container 0x7f05003c
 int id default_activity_button 0x7f050028
 int id dialog 0x7f05000e
 int id disableHome 0x7f050008
+int id donate 0x7f05003f
 int id dropdown 0x7f05000f
 int id edit_query 0x7f050030
 int id end 0x7f050013
@@ -281,6 +282,7 @@ int id shortcut 0x7f05002e
 int id showCustom 0x7f050007
 int id showHome 0x7f050004
 int id showTitle 0x7f050006
+int id spectrumView1 0x7f05003e
 int id split_action_bar 0x7f05001e
 int id submit_area 0x7f050039
 int id tabMode 0x7f050002

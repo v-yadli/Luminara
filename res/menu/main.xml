@@ -2,5 +2,6 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     tools:context="com.yadli.luminara.MainActivity" >
+    <item android:id="@+id/donate" android:title="Donate"></item>
 
 </menu>
