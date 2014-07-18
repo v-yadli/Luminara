@@ -42,7 +42,6 @@ import android.os.Build;
 public class MainActivity extends ActionBarActivity {
 
 	static final int LOOP_PERIOD = 20;
-	static final int LAZY_LATCH_THRESHOLD = 1000;
 	static final float minimalMax = 100.0f;
 	static final float decayStrength = 0.99f;
 
@@ -50,13 +49,8 @@ public class MainActivity extends ActionBarActivity {
 	static Activity currentActivity = null;
 
 	static boolean started = false;
-	static boolean onLazyCommit = false;
-	static boolean onFatalError = false;
-	static int commit_clk = 0;
 	static boolean onPowerSave = false;
 	static Visualizer visualizer = null;
-	static private File dir;
-	static private HashMap<String, File> leds;
 
 	static float loMax, miMax, hiMax;
 	static float rmsMax = 1.0f;
@@ -71,6 +65,7 @@ public class MainActivity extends ActionBarActivity {
 	static int triggerPos = 0;
 	static int Fs = -1;
 	static int N = -1;
+	static int captureRate = 0;
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
@@ -127,7 +122,6 @@ public class MainActivity extends ActionBarActivity {
 
 	@Override
 	public void onDestroy() {
-		commit(0, 0, 0);
 		Log.d("visualizer", "onDestroy");
 		stop();
 		super.onDestroy();
@@ -170,14 +164,14 @@ public class MainActivity extends ActionBarActivity {
 	}
 
 	protected static void adaptivaeThresholdCalc() {
-		Log.d("visualizer", "t=" + triggerCount);
+		// Log.d("visualizer", "t=" + triggerCount);
 		if (triggerCount > 3) {
 			threshold /= 0.9;
-			Log.d("visualizer", "threshold up to " + threshold);
+			// Log.d("visualizer", "threshold up to " + threshold);
 		}
 		if (triggerCount < 2) {
 			threshold *= 0.9;
-			Log.d("visualizer", "threshold down to " + threshold);
+			// Log.d("visualizer", "threshold down to " + threshold);
 		}
 
 		if (threshold < 1.5f)
@@ -273,7 +267,7 @@ public class MainActivity extends ActionBarActivity {
 		loVal = boost(loVal);
 		miVal = boost(miVal);
 		hiVal = boost(hiVal);
-		commit(loVal, miVal, hiVal);
+		LEDOperator.commit(loVal, miVal, hiVal);
 	}
 
 	protected static float calculateIntensity(float rms) {
@@ -451,21 +445,29 @@ public class MainActivity extends ActionBarActivity {
 	public static void resumeIfOnPowerSave() {
 		if (onPowerSave) {
 			onPowerSave = false;
-			startVisualizer();
+			start();
 		}
 	}
 
 	public static void powerSaveIfOnLazyCommit() {
 		if (ScreenReceiver.screenIsOn)
 			return;
-		if (onLazyCommit) {
+		if (LEDOperator.onLazyCommit) {
 			// we're going down, we're going
 			Log.d("visualizer", "entering power save mode");
 			onPowerSave = true;
 			stop();
 		} else {
-			Log.d("visualizer", "active, not going power save");
+			// Log.d("visualizer", "active, not going power save");
 		}
+	}
+
+	public static boolean start() {
+		if (LEDOperator.initialize(currentActivity)) {
+			startVisualizer();
+			return true;
+		}
+		return false;
 	}
 
 	public static void stop() {
@@ -479,13 +481,12 @@ public class MainActivity extends ActionBarActivity {
 				// TODO Auto-generated catch block
 				e.printStackTrace();
 			}
-			commit(0, 0, 0);
+			LEDOperator.stop();
 		}
 		visualizer = null;
 		started = false;
 
 	}
-
 
 	protected static void startVisualizer() {
 		try {
@@ -499,12 +500,14 @@ public class MainActivity extends ActionBarActivity {
 			if (idx == -1)
 				idx = 1;
 			visualizer.setCaptureSize(ranges[idx]);
+			captureRate = visualizer.getMaxCaptureRate() / 1000;
 			// visualizer.setScalingMode(Visualizer.SCALING_MODE_NORMALIZED);
 			hiMax = miMax = loMax = minimalMax;
 			Fs = visualizer.getSamplingRate() / 1000;
 			N = visualizer.getCaptureSize();
 			Log.d("visualizer", "Sampling rate = " + Fs);
 			Log.d("visualizer", "Capture size = " + N);
+			Log.d("visualizer", "Capture rate = " + captureRate);
 			visualizer.setDataCaptureListener(
 					new Visualizer.OnDataCaptureListener() {
 						public void onWaveFormDataCapture(
@@ -545,315 +548,6 @@ public class MainActivity extends ActionBarActivity {
 		public PlaceholderFragment() {
 		}
 
-		protected CommandCapture hackBrightnessFile(String path, File target) {
-			// AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
-			// getActivity());
-			// dlgBuilder.setMessage("putting "+path+" to "+
-			// target.getAbsolutePath());
-			// dlgBuilder.setTitle("Debug");
-			// dlgBuilder.show();
-			return new CommandCapture(0, "chmod 666 " + path,
-					"chown root:sdcard_r " + path,
-
-					"rm -f" + target.getAbsolutePath(),
-
-					"ln -s " + path + " " + target.getAbsolutePath());
-		}
-
-		protected void probe_rgb() {
-			File f;
-			f = new File("/sys/class/leds/led:rgb_red/brightness");
-			if (f.exists())
-				leds.put("red", f);
-			f = new File("/sys/class/leds/pwr-red/brightness");
-			if (f.exists())
-				leds.put("red", f);
-			f = new File("/sys/class/leds/red/brightness");
-			if (f.exists())
-				leds.put("red", f);
-			f = new File("/sys/class/leds/led_r/brightness");
-			if (f.exists())
-				leds.put("red", f);
-			f = new File("/sys/class/leds/led_r/brightness");
-			if (f.exists())
-				leds.put("red", f);
-			f = new File("/sys/class/leds/lm3533-red/brightness");
-			if (f.exists())
-				leds.put("red", f);
-
-			f = new File("/sys/class/leds/led:rgb_blue/brightness");
-			if (f.exists())
-				leds.put("blue", f);
-			f = new File("/sys/class/leds/pwr-blue/brightness");
-			if (f.exists())
-				leds.put("blue", f);
-			f = new File("/sys/class/leds/blue/brightness");
-			if (f.exists())
-				leds.put("blue", f);
-			f = new File("/sys/class/leds/led_b/brightness");
-			if (f.exists())
-				leds.put("blue", f);
-			f = new File("/sys/class/leds/lm3533-blue/brightness");
-			if (f.exists())
-				leds.put("blue", f);
-
-			f = new File("/sys/class/leds/led:rgb_green/brightness");
-			if (f.exists())
-				leds.put("green", f);
-			f = new File("/sys/class/leds/pwr-green/brightness");
-			if (f.exists())
-				leds.put("green", f);
-			f = new File("/sys/class/leds/green/brightness");
-			if (f.exists())
-				leds.put("green", f);
-			f = new File("/sys/class/leds/led_g/brightness");
-			if (f.exists())
-				leds.put("green", f);
-			f = new File("/sys/class/leds/lm3533-green/brightness");
-			if (f.exists())
-				leds.put("green", f);
-		}
-
-		protected void probe_logo() {
-			File f;
-			f = new File("/sys/class/leds/logo-backlight_1/brightness");
-			if (f.exists())
-				leds.put("logo1", f);
-
-			f = new File("/sys/class/leds/logo-backlight_2/brightness");
-			if (f.exists())
-				leds.put("logo2", f);
-		}
-
-		protected void probe_special() {
-			File f;
-
-			// TODO detect LT26 device name
-			f = new File("/sys/class/leds/button-backlight/brightness");
-			if (f.exists())
-				leds.put("button", f);
-
-			f = new File("/sys/class/leds/R/brightness");
-			if (f.exists())
-				leds.put("back-red", f);
-			f = new File("/sys/class/leds/G/brightness");
-			if (f.exists())
-				leds.put("back-green", f);
-			f = new File("/sys/class/leds/B/brightness");
-			if (f.exists())
-				leds.put("back-blue", f);
-
-			//Xperia SP
-			f = new File("/sys/class/leds/LED1_R/brightness");
-			if (f.exists())
-				leds.put("SP-R1", f);
-			f = new File("/sys/class/leds/LED2_R/brightness");
-			if (f.exists())
-				leds.put("SP-R2", f);
-			f = new File("/sys/class/leds/LED3_R/brightness");
-			if (f.exists())
-				leds.put("SP-R3", f);
-
-			f = new File("/sys/class/leds/LED1_G/brightness");
-			if (f.exists())
-				leds.put("SP-G1", f);
-			f = new File("/sys/class/leds/LED2_G/brightness");
-			if (f.exists())
-				leds.put("SP-G2", f);
-			f = new File("/sys/class/leds/LED3_G/brightness");
-			if (f.exists())
-				leds.put("SP-G3", f);
-
-			f = new File("/sys/class/leds/LED1_B/brightness");
-			if (f.exists())
-				leds.put("SP-B1", f);
-			f = new File("/sys/class/leds/LED2_B/brightness");
-			if (f.exists())
-				leds.put("SP-B2", f);
-			f = new File("/sys/class/leds/LED3_B/brightness");
-			if (f.exists())
-				leds.put("SP-B3", f);
-
-			// Moto G
-
-			f = new File("/sys/class/leds/white/brightness");
-			if (f.exists())
-				leds.put("white", f);
-		}
-
-		protected void probe_trigger() {
-			File f;
-
-			f = new File("/sys/class/leds/red/on_off_ms");
-			if (f.exists())
-				leds.put("on-off-red", f);
-			f = new File("/sys/class/leds/green/on_off_ms");
-			if (f.exists())
-				leds.put("on-off-green", f);
-			f = new File("/sys/class/leds/blue/on_off_ms");
-			if (f.exists())
-				leds.put("on-off-blue", f);
-
-			f = new File("/sys/class/leds/red/rgb_start");
-			if (f.exists())
-				leds.put("trigger", f);
-			// f = new File("/sys/class/leds/green/rgb_start");
-			// if (f.exists())
-			// leds.put("trigger-green", f);
-			// f = new File("/sys/class/leds/blue/rgb_start");
-			// if (f.exists())
-			// leds.put("trigger-blue", f);
-		}
-
-		protected void finalCheckBeforeStart() {
-			// boolean fileNotFound = false;
-			// boolean ioException = false;
-			// try {
-			// postValueToFile(0, "red");
-			// } catch (FileNotFoundException e) {
-			// fileNotFound = true;
-			// } catch (IOException e) {
-			// ioException = true;
-			// }
-			// XXX problem with this
-			// if (fileNotFound)// try to fix this problem
-			// {
-			// String filePath = dir.getAbsolutePath();
-			// if (RootTools.isAccessGiven()) {
-			//
-			// final StringBuilder userNameStrBuilder = new StringBuilder();
-			//
-			// Command unameCmd = new Command(0, "ls -la " + filePath
-			// + "/../") {
-			//
-			// @Override
-			// public void commandCompleted(int arg0, int arg1) {
-			// // TODO Auto-generated method stub
-			//
-			// }
-			//
-			// @Override
-			// public void commandOutput(int arg0, String arg1) {
-			// if (arg1.contains("files"))// that's it.
-			// {
-			// String[] strs = arg1.split(" ");
-			// Log.d("visualizer", "user name = " + strs[1]);
-			// userNameStrBuilder.append(strs[1]);
-			// }
-			// }
-			//
-			// @Override
-			// public void commandTerminated(int arg0, String arg1) {
-			// // TODO Auto-generated method stub
-			//
-			// }
-			//
-			// };
-			// try {
-			// Shell sh = RootTools.getShell(true);
-			// sh.add(unameCmd);
-			// String uname = userNameStrBuilder.toString();
-			// if (!uname.equals("")) {
-			// for (String name : leds.keySet()) {
-			// Command chownCmd = new Command(0, "chown "
-			// + uname + ":" + uname + " "
-			// + leds.get(name).getAbsolutePath()) {
-			//
-			// @Override
-			// public void commandCompleted(int arg0,
-			// int arg1) {
-			// // TODO Auto-generated method stub
-			//
-			// }
-			//
-			// @Override
-			// public void commandOutput(int arg0,
-			// String arg1) {
-			// Log.d("visualizer", arg1);
-			// }
-			//
-			// @Override
-			// public void commandTerminated(int arg0,
-			// String arg1) {
-			// // TODO Auto-generated method stub
-			//
-			// Log.d("visualizer", arg1);
-			// }
-			//
-			// };
-			// sh.add(chownCmd);
-			// }
-			// }
-			// } catch (IOException e) {
-			// // TODO Auto-generated catch block
-			// e.printStackTrace();
-			// } catch (TimeoutException e) {
-			// // TODO Auto-generated catch block
-			// e.printStackTrace();
-			// } catch (RootDeniedException e) {
-			// // TODO Auto-generated catch block
-			// e.printStackTrace();
-			// }
-			// }
-			// }
-
-		}
-
-		protected boolean initialize() {
-
-			leds = new HashMap<String, File>();
-
-			try {
-				dir = getActivity().getFilesDir();
-
-				probe_rgb();
-				probe_logo();// for Xperia TX
-				probe_special(); // for my beloved Xperia SL
-				probe_trigger(); // for Nexus 5
-
-				if (RootTools.isAccessGiven()) {
-
-					Shell sh = RootTools.getShell(true);
-
-					CommandCapture rmCmd = new CommandCapture(0, "rm -f "
-							+ dir.getAbsolutePath() + "/*");
-					sh.add(rmCmd);
-
-					for (String key : leds.keySet()) {
-						File f = new File(dir, key);
-						CommandCapture cmd = hackBrightnessFile(leds.get(key)
-								.getAbsolutePath(), f);
-						sh.add(cmd);
-						leds.put(key, f);
-					}
-
-					while (sh.isExecuting) {
-						Thread.sleep(1);
-					}
-
-					return true;
-				}
-
-				// Runtime.getRuntime()
-				// .exec("su -c '"
-				// + "'");
-			} catch (Exception e) {
-				StringWriter sw = new StringWriter();
-				PrintWriter pw = new PrintWriter(sw);
-				e.printStackTrace(pw);
-				pw.close();
-				AlertDialog.Builder dlgBuilder = new AlertDialog.Builder(
-						getActivity());
-				// dlgBuilder.setMessage(e.toString()+"\n"+e.);
-				dlgBuilder.setMessage(sw.toString());
-				dlgBuilder.setTitle("Alert");
-				dlgBuilder.show();
-
-				e.printStackTrace();
-			}
-			return false;
-		}
-
 		@Override
 		public View onCreateView(LayoutInflater inflater, ViewGroup container,
 				Bundle savedInstanceState) {
@@ -875,11 +569,7 @@ public class MainActivity extends ActionBarActivity {
 						// http://stackoverflow.com/questions/5293615/how-can-i-get-root-permissions-through-the-android-sdk
 						// IS WRONG
 
-						if (initialize()) {
-
-							finalCheckBeforeStart();
-
-							startVisualizer();
+						if (start()) {
 							if (started)
 								b.setText("STOP");
 						} else {
